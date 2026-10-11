@@ -157,6 +157,15 @@ int link_mac_bench_decode(enum qam_mod mod, struct qam_rx_info *info, uint32_t *
 void link_mac_pause(bool pause);
 
 /*
+ * Run @p fn(@p arg) on the paused MAC thread (link_mac_pause()) and wait for
+ * it: the decoders need about 3.5 KB of stack, more than the shell has.
+ *
+ * @return 0; -ENODEV if the MAC thread does not run (the radio failed to
+ * start); -ETIMEDOUT if it did not take the job within 10 s.
+ */
+int link_mac_run_paused(void (*fn)(void *arg), void *arg);
+
+/*
  * Hand out the next capture that crossed the carrier sense threshold (with
  * @p decoded: that held a data frame that decoded) within @p timeout: the MAC thread then holds the bank until link_mac_dump_release().
  */

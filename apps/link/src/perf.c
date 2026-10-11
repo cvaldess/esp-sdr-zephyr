@@ -502,6 +502,29 @@ static int cmd_set(const struct shell *sh, size_t argc, char **argv)
 static uint32_t bench_ram[1024];
 static ESP_SDR_HIGH_RAM uint32_t bench_high[1024];
 
+struct noise_decode {
+	const struct esp_sdr_rx_burst *b;
+	struct qam_rx_info info;
+	uint32_t cycles;
+	int ret;
+};
+
+/* A decode of noise on the paused MAC thread (link_mac_run_paused()), with the decoder's stack. */
+static void noise_decode(void *arg)
+{
+	/* PSRAM: internal RAM is short with both dump banks reserved. */
+	static EXT_RAM_BSS_ATTR struct qam_rx rx;
+	static EXT_RAM_BSS_ATTR uint8_t cw[QAM_RX_CW_BYTES];
+	struct noise_decode *job = arg;
+	struct qam_hdr h;
+	uint32_t t0;
+
+	rx.cw = cw;
+	t0 = k_cycle_get_32();
+	job->ret = qam_rx_decode(&rx, job->b->words, job->b->count, &h, &job->info);
+	job->cycles = k_cycle_get_32() - t0;
+}
+
 static int cmd_bench(const struct shell *sh, size_t argc, char **argv)
 {
 	struct esp_sdr_rx_burst b;
@@ -568,19 +591,15 @@ static int cmd_bench(const struct shell *sh, size_t argc, char **argv)
 	t1 = k_cycle_get_32();
 	shell_print(sh, "4096 bank reads again: %u cycles (%u)", t1 - t0, acc);
 	{
-		/* PSRAM: internal RAM is short with both dump banks reserved. */
-		static EXT_RAM_BSS_ATTR struct qam_rx rx;
-		static EXT_RAM_BSS_ATTR uint8_t cw[QAM_RX_CW_BYTES];
-		struct qam_hdr h;
-		struct qam_rx_info info;
+		struct noise_decode job = {.b = &b};
 
-		rx.cw = cw;
 		(void)esp_sdr_rx_capture(ESP_SDR_RATE_80MSPS, 16380, &b);
-		t0 = k_cycle_get_32();
-		ret = qam_rx_decode(&rx, b.words, b.count, &h, &info);
-		t1 = k_cycle_get_32();
+		ret = link_mac_run_paused(noise_decode, &job);
+		if (ret == 0) {
+			ret = job.ret;
+		}
 		shell_print(sh, "decode noise: %u us, ret %d, stages %u %u cycles",
-			    k_cyc_to_us_floor32(t1 - t0), ret, info.prof[0], info.prof[1]);
+			    k_cyc_to_us_floor32(job.cycles), ret, job.info.prof[0], job.info.prof[1]);
 	}
 	shell_print(sh, "cycle clock %u Hz, cpu %d", sys_clock_hw_cycles_per_sec(),
 		    arch_curr_cpu()->id);
@@ -617,10 +636,14 @@ static int cmd_decode(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argv);
 	link_mac_pause(true);
 	for (int m = 0; m < QAM_MODS; m++) {
-		struct qam_rx_info info;
-		uint32_t b, d;
+		struct qam_rx_info info = {0};
+		uint32_t b = 0, d = 0;
 		int ret = link_mac_bench_decode((enum qam_mod)m, &info, &b, &d);
 
+		if (ret == -ENODEV || ret == -ETIMEDOUT) {
+			shell_error(sh, "the MAC thread runs the decoder and is not running (%d)", ret);
+			break;
+		}
 		shell_print(sh, "%-7s build %5u us, decode %5u us (ret %d, MER %.1f dB): search %u "
 			    "fine %u train %u header %u payload %u fec %u us",
 			    mod_names[m], b, d, ret, (double)info.mer_db,

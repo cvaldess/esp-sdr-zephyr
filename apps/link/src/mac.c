@@ -174,6 +174,16 @@ static K_SEM_DEFINE(pause_ack, 0, 1);
 static bool pause_acked;
 static K_SEM_DEFINE(dump_ready, 0, 1);
 static K_SEM_DEFINE(dump_done, 0, 1);
+
+/* Work for the paused MAC thread (link_mac_run_paused()). */
+struct paused_job {
+	void (*fn)(void *arg);
+	void *arg;
+};
+static atomic_ptr_t paused_job;
+static K_SEM_DEFINE(paused_done, 0, 1);
+/* Set once the radio is up and the MAC thread loops; it never stops after that. */
+static atomic_t mac_running;
 static const uint32_t *dump_words;
 static size_t dump_n;
 
@@ -1048,17 +1058,27 @@ static void mac_loop(void *p1, void *p2, void *p3)
 	}
 	qam_tx_init(&qam_tx_ctx, QAM_QPSK, cfg.amp);
 	apply_cfg();
+	atomic_set(&mac_running, 1);
 
 	for (;;) {
 		float p;
 
 		if (atomic_get(&paused)) {
+			struct paused_job *job;
+
 			/* Hand the data bank and the TX context over: drop builds, rebuild later. */
 			if (!pause_acked) {
 				build_discard();
 				out.built = false;
 				pause_acked = true;
 				k_sem_give(&pause_ack);
+			}
+			/* Taken before it runs: link_mac_run_paused() can only withdraw a waiting one. */
+			job = atomic_ptr_set(&paused_job, NULL);
+			if (job != NULL) {
+				job->fn(job->arg);
+				k_sem_give(&paused_done);
+				continue;
 			}
 			k_sleep(K_MSEC(10));
 			continue;
@@ -1349,10 +1369,31 @@ void link_mac_pause(bool pause)
 		k_sem_reset(&pause_ack);
 		atomic_set(&paused, 1);
 		/* The MAC thread acknowledges between slots, after dropping its builds. */
-		(void)k_sem_take(&pause_ack, K_SECONDS(2));
+		if (atomic_get(&mac_running) != 0) {
+			(void)k_sem_take(&pause_ack, K_SECONDS(2));
+		}
 	} else {
 		atomic_set(&paused, 0);
 	}
+}
+
+int link_mac_run_paused(void (*fn)(void *arg), void *arg)
+{
+	struct paused_job job = {.fn = fn, .arg = arg};
+
+	if (atomic_get(&mac_running) == 0) {
+		return -ENODEV;
+	}
+	k_sem_reset(&paused_done);
+	(void)atomic_ptr_set(&paused_job, &job);
+	if (k_sem_take(&paused_done, K_SECONDS(10)) != 0) {
+		if (atomic_ptr_cas(&paused_job, &job, NULL)) {
+			return -ETIMEDOUT;
+		}
+		/* Started meanwhile. */
+		(void)k_sem_take(&paused_done, K_FOREVER);
+	}
+	return 0;
 }
 
 void link_mac_clear_stats(void)
@@ -1365,28 +1406,36 @@ void link_mac_clear_stats(void)
 	atomic_set(&clear_req, 1);
 }
 
-int link_mac_bench_decode(enum qam_mod mod, struct qam_rx_info *info, uint32_t *build_us,
-			  uint32_t *decode_us)
+struct bench_decode {
+	enum qam_mod mod;
+	struct qam_rx_info *info;
+	uint32_t build_us, decode_us;
+	int ret;
+};
+
+/* On the paused MAC thread (link_mac_run_paused()), with the decoder's stack. */
+static void bench_decode(void *arg)
 {
+	struct bench_decode *job = arg;
 	size_t words;
 	uint32_t *tx = esp_sdr_tx_loop_buf(DATA_BANK, &words);
 	uint32_t *rx = esp_sdr_tx_loop_buf(ACK_BANK, &words);
-	struct qam_hdr h = {.type = MAC_DATA, .mod = (uint8_t)mod, .fec = QAM_FEC_RS,
-			    .ncw = (uint8_t)qam_ncw_max(mod, QAM_FEC_RS),
+	struct qam_hdr h = {.type = MAC_DATA, .mod = (uint8_t)job->mod, .fec = QAM_FEC_RS,
+			    .ncw = (uint8_t)qam_ncw_max(job->mod, QAM_FEC_RS),
 			    .dst = 1, .src = 2, .seq = 7};
 	size_t len, n = WINDOW_SAMPLES;
 	uint32_t t0;
-	int ret;
 
 	for (size_t i = 0; i < qam_payload_bytes(QAM_FEC_RS, h.ncw); i++) {
 		payload[0][i] = (uint8_t)(i * 37U + 11U);
 	}
-	qam_tx_init(&qam_tx_ctx, mod, cfg.amp);
+	qam_tx_init(&qam_tx_ctx, job->mod, cfg.amp);
 	t0 = now_cyc();
 	len = qam_tx_build(&qam_tx_ctx, &h, payload[0], tx);
-	*build_us = cyc_us(now_cyc() - t0);
+	job->build_us = cyc_us(now_cyc() - t0);
 	if (len == 0) {
-		return -EINVAL;
+		job->ret = -EINVAL;
+		return;
 	}
 	/* Loop it into a capture window in receive word order (Q low, I high). */
 	for (size_t i = 0; i < n; i++) {
@@ -1396,11 +1445,24 @@ int link_mac_bench_decode(enum qam_mod mod, struct qam_rx_info *info, uint32_t *
 	}
 	qam_rx_ctx.carrier_hz = 0.0f;
 	t0 = now_cyc();
-	ret = qam_rx_decode(&qam_rx_ctx, rx, n, &h, info);
-	*decode_us = cyc_us(now_cyc() - t0);
+	job->ret = qam_rx_decode(&qam_rx_ctx, rx, n, &h, job->info);
+	job->decode_us = cyc_us(now_cyc() - t0);
 	qam_rx_ctx.carrier_hz = (float)cfg.freq_mhz * 1e6f;
 	qam_tx_init(&qam_tx_ctx, QAM_QPSK, cfg.amp);
-	return ret;
+}
+
+int link_mac_bench_decode(enum qam_mod mod, struct qam_rx_info *info, uint32_t *build_us,
+			  uint32_t *decode_us)
+{
+	struct bench_decode job = {.mod = mod, .info = info};
+	int ret = link_mac_run_paused(bench_decode, &job);
+
+	if (ret != 0) {
+		return ret;
+	}
+	*build_us = job.build_us;
+	*decode_us = job.decode_us;
+	return job.ret;
 }
 
 int64_t link_mac_client_end_ms(void)
