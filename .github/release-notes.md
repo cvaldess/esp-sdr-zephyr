@@ -4,6 +4,8 @@ For the Seeed XIAO ESP32S3 (8 MB flash) and an x86_64 Linux PC:
 - `@PLUGIN@`: the SoapySDR module for the board's osmosdr app (`driver=esdr`), built on
   Ubuntu 24.04 for SoapySDR ABI @ABI@ and libusb 1.0. Elsewhere, build it from
   `apps/osmosdr/soapy`.
+- `esp32s3-esp-sdr-@TAG@.svd`, `esp32c6-esp-sdr-@TAG@.svd`: Espressif's SVDs with the radio
+  registers this project documents (`doc/undocumented-registers-*.md`), for debuggers.
 
 ## gqrx
 

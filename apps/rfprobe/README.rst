@@ -11,8 +11,8 @@ through the library's frequency plan or program the PLL directly, loop a tone
 (S3), dump raw captures and read the analog I2C registers. The firmware only
 moves data; ``tools/rfprobe.py`` does the analysis on the host. It found the
 usable LO range, the VCO window comparator, the fractional-N divider words and
-the C6's stale modem state (``doc/undocumented-registers.md``,
-``doc/hardware-quirks.md``).
+the C6's stale modem state (``doc/undocumented-registers-esp32s3.md``,
+``doc/undocumented-registers-esp32c6.md``, ``doc/hardware-quirks.md``).
 
 Every filter is open at boot (receive and, on the S3, transmit low-pass code 0).
 Two-board measurements need the boards' RF ports joined, as for

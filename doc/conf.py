@@ -25,7 +25,7 @@ html_theme = "alabaster"
 intersphinx_mapping = {"zephyr": ("https://docs.zephyrproject.org/latest/", None)}
 
 # Links to headings inside the Markdown guides (file.md#section).
-myst_heading_anchors = 3
+myst_heading_anchors = 4
 
 # The diagram sources in the guides (GitHub renders them, Pygments cannot).
 lexers["mermaid"] = TextLexer()

@@ -30,6 +30,12 @@ jobs:
           echo "${PWD}/doxygen-${DOXYGEN_VERSION}/bin" >> $GITHUB_PATH
           pip install -r doc/requirements.txt
 
+      # The register pages are generated from doc/registers/*.svd, which merge into Espressif's SVD.
+      - name: Register pages
+        run: |
+          python3 doc/registers/svd2md.py --check
+          python3 doc/registers/svdmerge.py --out _svd
+
       - name: Build
         run: |
           cd doc

@@ -35,7 +35,7 @@
 
 #define TWO_PI 6.28318530717958647692
 
-/* Vendor and ROM calls, as lib/esp_sdr uses them (doc/undocumented-registers.md). */
+/* Vendor and ROM calls, as lib/esp_sdr uses them (doc/undocumented-registers-*.md). */
 extern unsigned int rom_chip_i2c_readReg(unsigned int block, unsigned int host, unsigned int reg);
 extern void regi2c_enter_critical(void);
 extern void regi2c_exit_critical(void);

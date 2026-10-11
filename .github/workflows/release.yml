@@ -2,8 +2,8 @@
 #
 # A version tag (v<major>.<minor>.<patch>, as in VERSION) gets a GitHub release with one
 # esptool image for the XIAO ESP32-S3 (MCUboot, multiapp and the FAT volume with every
-# app's file, merged at their flash offsets) and the SoapySDR module for osmosdr, notes
-# from release-notes.md.
+# app's file, merged at their flash offsets), the SoapySDR module for osmosdr and
+# Espressif's SVDs with this project's radio registers, notes from release-notes.md.
 
 name: Release
 
@@ -76,11 +76,20 @@ jobs:
             0x400000 build/multiapp/multiapp_fat.img
           echo "IMAGE=$image" >> "$GITHUB_ENV"
 
+      - name: Merge the register SVDs
+        run: |
+          python3 esp-sdr-zephyr/doc/registers/svdmerge.py --out svd
+          for chip in esp32s3 esp32c6; do
+            cp svd/$chip-esp-sdr.svd $chip-esp-sdr-$GITHUB_REF_NAME.svd
+          done
+
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           sed -e "s/@IMAGE@/$IMAGE/g" -e "s/@PLUGIN@/$PLUGIN/g" -e "s/@ABI@/$SOAPY_ABI/g" \
+            -e "s/@TAG@/$GITHUB_REF_NAME/g" \
             esp-sdr-zephyr/.github/release-notes.md > notes.md
-          gh release create "$GITHUB_REF_NAME" "$IMAGE" "$PLUGIN" --repo "$GITHUB_REPOSITORY" \
+          gh release create "$GITHUB_REF_NAME" "$IMAGE" "$PLUGIN" *-esp-sdr-$GITHUB_REF_NAME.svd \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes --verify-tag
