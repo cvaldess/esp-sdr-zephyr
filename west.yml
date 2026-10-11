@@ -16,14 +16,16 @@ manifest:
       url-base: https://github.com/espressif
 
   projects:
-    # Zephyr with ESP32-S3 SMP (zephyrproject-rtos/zephyr#120082, rebased) and
-    # the CDC-NCM NTB aggregation the USB stream relies on.
+    # Zephyr with ESP32-S3 SMP (zephyrproject-rtos/zephyr#120082, rebased), the
+    # CDC-NCM NTB aggregation the USB stream relies on, and the llext and
+    # Xtensa changes apps/multiapp needs (doc/multiapp.md, "Zephyr changes").
     - name: zephyr
       remote: cyber-murmel
-      revision: 7127a8f5cd41620fb8c2941279a790c2ef7a6e3e # esp-sdr branch
+      revision: 2823501659b0eb52da8884196fa24cd53ee66276 # esp-sdr-multiapp branch
       path: modules/zephyr
       import:
         name-allowlist:
+          - fatfs
           - mcuboot
           - mbedtls
           - tf-psa-crypto
