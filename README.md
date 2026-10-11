@@ -54,6 +54,10 @@ layout and toolchain peculiarities and how the code handles them.
 Each app also builds on its own, for example `esp-sdr-zephyr/apps/osmosdr` in
 place of `esp-sdr-zephyr/apps/multiapp` (and no `west dfu --storage`).
 
+Without building: each release has this multiapp as one image,
+`esptool --chip esp32s3 write-flash 0x0 esp-sdr-multiapp-<tag>-xiao_esp32s3.bin`
+with the board in download mode (BOOT held while plugging it in).
+
 ## The library
 
 - ESP32-S3 (tested on the Seeed XIAO ESP32S3), SMP or single core. The
@@ -132,7 +136,9 @@ in its `doxygen/` folder. Both treat warnings as errors in CI
 Zephyr's format; every app links to it, so `app_version.h` and the signed
 MCUboot image carry it, and each app prints it at boot. Major grows with a
 breaking API change, minor with a compatible API extension or another
-improvement, patch with small fixes and other minor changes.
+improvement, patch with small fixes and other minor changes. A tag
+`v<major>.<minor>.<patch>` matching `VERSION` makes a GitHub release with the
+multiapp image (`.github/workflows/release.yml`).
 
 ## Dependencies
 
