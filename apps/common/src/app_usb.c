@@ -7,6 +7,7 @@
  */
 
 #include <sample_usbd.h>
+#include <string.h>
 
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/drivers/watchdog.h>
@@ -18,11 +19,19 @@
 #include "app_crash.h"
 #include "app_usb.h"
 
+#include <esp_attr.h>
+#if defined(CONFIG_SHELL)
+#include <zephyr/shell/shell.h>
+#include <soc/rtc_cntl_reg.h>
+#endif
+
 LOG_MODULE_REGISTER(app_usb, LOG_LEVEL_INF);
 
 #define REBOOT_DELAY K_MSEC(1000)
 
 static struct k_work_delayable start_work;
+/* The device once started, for "usj". */
+static struct usbd_context *usb_ctx;
 static struct k_work_delayable reboot_work;
 
 #if defined(CONFIG_APP_TRIAL_WATCHDOG) || defined(CONFIG_APP_LIVENESS_WATCHDOG)
@@ -185,8 +194,12 @@ static void msg_cb(struct usbd_context *const ctx, const struct usbd_msg *const 
 		switch_to_dfu_mode(ctx);
 	}
 	if (msg->type == USBD_MSG_DFU_DOWNLOAD_COMPLETED) {
-		/* MCUboot test-boots the new image; the host confirms it over the shell. */
-		int err = boot_request_upgrade(BOOT_UPGRADE_TEST);
+		int err = 0;
+
+		/* MCUboot test-boots a new image; the host confirms it over the shell. */
+		if (app_usb_dfu_was_slot()) {
+			err = boot_request_upgrade(BOOT_UPGRADE_TEST);
+		}
 
 		LOG_INF("update stored (%d), rebooting", err);
 		k_work_schedule(&reboot_work, REBOOT_DELAY);
@@ -195,12 +208,64 @@ static void msg_cb(struct usbd_context *const ctx, const struct usbd_msg *const 
 }
 
 #if defined(CONFIG_APP_USB_DFU)
+/* The USB thread's stack use in the last DFU download, kept over the reboot. */
+#define DFU_STACK_MAGIC 0x44465553U
+static RTC_NOINIT_ATTR struct {
+	uint32_t magic;
+	uint32_t used, size;
+} dfu_stack;
+
+#if defined(CONFIG_INIT_STACKS) && defined(CONFIG_THREAD_NAME) && defined(CONFIG_THREAD_MONITOR)
+static void note_usbd_stack(const struct k_thread *thread, void *user_data)
+{
+	size_t unused;
+
+	ARG_UNUSED(user_data);
+	if (strcmp(k_thread_name_get((k_tid_t)thread), "usbd") == 0 &&
+	    k_thread_stack_space_get(thread, &unused) == 0) {
+		dfu_stack.used = thread->stack_info.size - unused;
+		dfu_stack.size = thread->stack_info.size;
+		dfu_stack.magic = DFU_STACK_MAGIC;
+	}
+}
+#endif
+
 static void reboot_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
+#if defined(CONFIG_INIT_STACKS) && defined(CONFIG_THREAD_NAME) && defined(CONFIG_THREAD_MONITOR)
+	k_thread_foreach(note_usbd_stack, NULL);
+#endif
 	sys_reboot(SYS_REBOOT_COLD);
 }
+
+bool app_usb_dfu_stack(size_t *used, size_t *size)
+{
+	if (dfu_stack.magic != DFU_STACK_MAGIC) {
+		return false;
+	}
+	*used = dfu_stack.used;
+	*size = dfu_stack.size;
+	return true;
+}
+#else
+bool app_usb_dfu_stack(size_t *used, size_t *size)
+{
+	ARG_UNUSED(used);
+	ARG_UNUSED(size);
+	return false;
+}
 #endif
+
+__weak bool app_usb_dfu_was_slot(void)
+{
+	return true;
+}
+
+__weak void app_usb_classes(struct usbd_context *ctx)
+{
+	ARG_UNUSED(ctx);
+}
 
 static void start_handler(struct k_work *work)
 {
@@ -209,7 +274,14 @@ static void start_handler(struct k_work *work)
 
 	ARG_UNUSED(work);
 
-	ctx = sample_usbd_init_device(msg_cb);
+	/* sample_usbd_init_device() with app_usb_classes() between its two steps. */
+	ctx = sample_usbd_setup_device(msg_cb);
+	if (ctx != NULL) {
+		app_usb_classes(ctx);
+		if (usbd_init(ctx) != 0) {
+			ctx = NULL;
+		}
+	}
 	if (ctx == NULL) {
 		LOG_ERR("USB device init failed");
 		return;
@@ -221,6 +293,7 @@ static void start_handler(struct k_work *work)
 			return;
 		}
 	}
+	usb_ctx = ctx;
 	LOG_INF("USB device enabled");
 }
 
@@ -237,3 +310,34 @@ int app_usb_init(void)
 	k_work_schedule(&start_work, K_MSEC(CONFIG_APP_USB_START_DELAY_MS));
 	return 0;
 }
+
+#if defined(CONFIG_SHELL)
+/*
+ * "usj": the USB PHY to the USB-Serial-JTAG (esptool, OpenOCD) until the OTG
+ * driver takes it back at its next init. The device leaves the bus first, so
+ * the PC sees it go.
+ */
+static void usj_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (usb_ctx != NULL) {
+		(void)usbd_disable(usb_ctx);
+	}
+	k_msleep(200);
+	REG_SET_BIT(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_HW_USB_PHY_SEL);
+	REG_CLR_BIT(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_USB_PHY_SEL);
+}
+static K_WORK_DELAYABLE_DEFINE(usj_work, usj_handler);
+
+static int cmd_usj(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	shell_print(sh, "USB goes to the USB-Serial-JTAG until the next reset");
+	/* After the reply has left over CDC-ACM. */
+	k_work_schedule(&usj_work, K_MSEC(100));
+	return 0;
+}
+SHELL_CMD_REGISTER(usj, NULL, "Hand the USB port to the USB-Serial-JTAG (esptool, OpenOCD)",
+		   cmd_usj);
+#endif
