@@ -155,6 +155,13 @@ size_t ieee154_esp_sdr_get_stall(uint32_t *pc, uint32_t *ls, size_t max);
 /** Copy the driver counters into @p stats. */
 void ieee154_esp_sdr_get_stats(struct ieee154_esp_sdr_stats *stats);
 
+/**
+ * With CONFIG_ESP_SDR_IEEE802154_HIGH_RAM_APP, defined by the application:
+ * @p size bytes of 16-byte aligned internal RAM for the driver this boot, or
+ * NULL to leave it off. Called once, at device init.
+ */
+void *ieee154_esp_sdr_high_ram(size_t size);
+
 /** @} */
 
 #ifdef __cplusplus

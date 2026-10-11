@@ -45,7 +45,7 @@ LOG_MODULE_REGISTER(sdr, LOG_LEVEL_INF);
 /* Internal RAM for the USB DMA: what fits above the capture bank, the rest in DRAM. */
 #define BLOCKS      CONFIG_APP_RX_BLOCKS
 #define HIGH_BLOCKS MIN(BLOCKS, CONFIG_APP_RX_HIGH_BLOCKS)
-static uint8_t blocks_high[HIGH_BLOCKS][ESDR_BLOCK_BYTES] __aligned(16) ESP_SDR_HIGH_RAM;
+ESP_SDR_HIGH_BUF_DEFINE(uint8_t, blocks_high, [HIGH_BLOCKS][ESDR_BLOCK_BYTES], 16);
 #if BLOCKS > HIGH_BLOCKS
 static uint8_t blocks_low[BLOCKS - HIGH_BLOCKS][ESDR_BLOCK_BYTES] __aligned(16);
 #endif
@@ -931,9 +931,12 @@ static void rx_thread_fn(void *a, void *b, void *c)
 	}
 }
 
-/* Stacks above the capture bank: the DRAM image must end below the ring banks. */
-static Z_KERNEL_STACK_DEFINE_IN(sdr_rx_stack, 2048, ESP_SDR_HIGH_RAM);
-static Z_KERNEL_STACK_DEFINE_IN(sdr_usb_stack, 1024, ESP_SDR_HIGH_RAM);
+/*
+ * Stacks above the capture bank: the DRAM image must end below the ring banks.
+ * Receive peak: 1808 bytes, 1920 in multiapp.
+ */
+ESP_SDR_HIGH_STACK_DEFINE(sdr_rx_stack, 2560);
+ESP_SDR_HIGH_STACK_DEFINE(sdr_usb_stack, 1024);
 static struct k_thread rx_thread, usb_thread;
 
 unsigned int sdr_dgain_db(const struct sdr_settings *s)

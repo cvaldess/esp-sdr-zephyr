@@ -64,7 +64,30 @@ static int32_t rx_qsign = 1;
  * interrupts masked, and PSRAM stores cost it about 20 cycles per sample.
  */
 #define RX_IQ_SAMPLES MAX(RX_OUT, 4096U)
-static int16_t rx_iq[2 * RX_IQ_SAMPLES] ESP_SDR_HIGH_RAM;
+
+#define RING_STACK_SIZE 1536
+#define RX_STACK_SIZE   2048
+
+/*
+ * The driver's internal RAM: the high region, or what the application gives
+ * it for the boot (CONFIG_ESP_SDR_IEEE802154_HIGH_RAM_APP).
+ */
+struct sdr154_high {
+	int16_t rx_iq[2 * RX_IQ_SAMPLES];
+	ieee154_dsp_tmpl_t tmpl;
+	struct ieee154_dsp_tx tx;
+#if defined(CONFIG_ESP_SDR_IEEE802154_RING)
+	K_KERNEL_STACK_MEMBER(ring_stack, RING_STACK_SIZE);
+#endif
+	K_KERNEL_STACK_MEMBER(rx_stack, RX_STACK_SIZE);
+};
+
+#if defined(CONFIG_ESP_SDR_IEEE802154_HIGH_RAM_APP)
+static struct sdr154_high *high;
+#else
+static struct sdr154_high high_ram ESP_SDR_HIGH_RAM;
+static struct sdr154_high *const high = &high_ram;
+#endif
 
 __attribute__((optimize("O3"))) static void mix_decimate(const uint32_t *w, int16_t *out)
 {
@@ -77,14 +100,12 @@ static K_MUTEX_DEFINE(phy_lock);
 static int ack_seq = -1;
 static bool ack_seen;
 
-static ieee154_dsp_tmpl_t tmpl ESP_SDR_HIGH_RAM;
-static struct ieee154_dsp_tx tx ESP_SDR_HIGH_RAM;
 static bool tx_conj;
 
 static void tmpl_init(void)
 {
-	ieee154_dsp_tmpl_init(&tmpl, TX_AMP, tx_conj);
-	tx.tmpl = (const ieee154_dsp_tmpl_t *)&tmpl;
+	ieee154_dsp_tmpl_init(&high->tmpl, TX_AMP, tx_conj);
+	high->tx.tmpl = (const ieee154_dsp_tmpl_t *)&high->tmpl;
 }
 
 /* Runs in the DAC filler (interrupts locked with the vector interpolator): IRAM, tables in internal RAM. */
@@ -92,7 +113,7 @@ static IRAM_ATTR __attribute__((optimize("O3", "no-tree-loop-distribute-patterns
 							     uint64_t index, uint32_t n)
 {
 	ARG_UNUSED(user);
-	ieee154_dsp_tx_gen(&tx, dst, index, n);
+	ieee154_dsp_tx_gen(&high->tx, dst, index, n);
 }
 
 /* --------------------------------------------------------------- driver */
@@ -308,7 +329,7 @@ drop:
 #define SRING_SAMPLES 4096U
 /* Samples per PHY slice (0.25 ms). */
 #define PHY_CHUNK     1024U
-#define sring         rx_iq
+#define sring         (high->rx_iq)
 BUILD_ASSERT(RX_IQ_SAMPLES >= SRING_SAMPLES, "sample ring does not fit rx_iq");
 /* Output index past the last sample written, where the last gap ended, and the run. */
 static atomic_t sring_w, sring_gap, sring_gen;
@@ -542,7 +563,6 @@ static void rx_thread_fn(void *p1, void *p2, void *p3)
 	}
 }
 
-static Z_KERNEL_STACK_DEFINE_IN(sdr154_ring_stack, 1536, ESP_SDR_HIGH_RAM);
 static struct k_thread sdr154_ring_thread;
 #else
 /* Stalls are watched by the ring only. */
@@ -579,7 +599,7 @@ static void rx_thread_fn(void *p1, void *p2, void *p3)
 		t0 = k_cycle_get_32();
 		if (ret == 0) {
 			/* Under the radio lock: a transmission reuses the bank. */
-			mix_decimate(b.words, rx_iq);
+			mix_decimate(b.words, high->rx_iq);
 		}
 		k_mutex_unlock(&d->radio_lock);
 		if (ret != 0) {
@@ -590,7 +610,7 @@ static void rx_thread_fn(void *p1, void *p2, void *p3)
 		}
 		t1 = k_cycle_get_32();
 		ieee154_phy_rx_reset();
-		ieee154_phy_rx_block(rx_iq, RX_OUT);
+		ieee154_phy_rx_block(high->rx_iq, RX_OUT);
 		k_mutex_unlock(&phy_lock);
 		STATS_UPDATE(d->stats.captures++);
 		STATS_UPDATE(d->stats.filter_us = k_cyc_to_us_floor32(t1 - t0));
@@ -606,7 +626,6 @@ static inline void sring_new_gen(void)
 }
 #endif
 
-static Z_KERNEL_STACK_DEFINE_IN(sdr154_rx_stack, 2048, ESP_SDR_HIGH_RAM);
 static struct k_thread sdr154_rx_thread;
 
 static enum ieee802154_hw_caps sdr154_caps(const struct device *dev)
@@ -699,11 +718,11 @@ static int ack_wait(struct sdr154_data *d, uint8_t seq)
 		STATS_UPDATE(d->stats.capture_errors++);
 		return -EIO;
 	}
-	mix_decimate(b.words, rx_iq);
+	mix_decimate(b.words, high->rx_iq);
 	ack_seq = seq;
 	ack_seen = false;
 	ieee154_phy_rx_reset();
-	ieee154_phy_rx_block(rx_iq, RX_OUT);
+	ieee154_phy_rx_block(high->rx_iq, RX_OUT);
 	ieee154_phy_rx_reset();
 	ack_seq = -1;
 	/* rx_iq is the sample ring too: what the PHY thread had left in it is gone. */
@@ -738,9 +757,9 @@ static int sdr154_tx(const struct device *dev, enum ieee802154_tx_mode mode, str
 	len = ieee154_phy_append_fcs(psdu, len);
 
 	radio_take(d);
-	ieee154_dsp_tx_build(&tx, psdu, (uint8_t)len);
+	ieee154_dsp_tx_build(&high->tx, psdu, (uint8_t)len);
 	crumb(IEEE154_ESP_SDR_EV_TX, (uint32_t)len);
-	ret = esp_sdr_tx_dac_play_gen(tx_gen, NULL, ieee154_dsp_tx_samples(&tx));
+	ret = esp_sdr_tx_dac_play_gen(tx_gen, NULL, ieee154_dsp_tx_samples(&high->tx));
 	crumb(IEEE154_ESP_SDR_EV_TX_END, (uint32_t)-ret);
 	if (ret == 0) {
 		STATS_UPDATE(d->stats.tx_frames++);
@@ -866,9 +885,9 @@ int ieee154_esp_sdr_dump(ieee154_esp_sdr_dump_cb_t out, void *user)
 	crumb(IEEE154_ESP_SDR_EV_CAPTURE, 0);
 	ret = esp_sdr_rx_capture(RX_RATE, RX_WORDS, &b);
 	if (ret == 0) {
-		mix_decimate(b.words, rx_iq);
+		mix_decimate(b.words, high->rx_iq);
 		/* rx_iq is the ring's sample buffer too: hand it over before receive resumes. */
-		out(rx_iq, RX_OUT, user);
+		out(high->rx_iq, RX_OUT, user);
 		sring_new_gen();
 	}
 	k_mutex_unlock(&phy_lock);
@@ -903,10 +922,10 @@ int ieee154_esp_sdr_measure(struct ieee154_esp_sdr_measurement *m)
 	crumb(IEEE154_ESP_SDR_EV_CAPTURE, 0);
 	ret = esp_sdr_rx_capture(RX_RATE, RX_WORDS, &b);
 	if (ret == 0) {
-		mix_decimate(b.words, rx_iq);
-		m->cfo_hz = (int32_t)ieee154_dsp_cfo(rx_iq, RX_OUT, &p, &n);
-		m->coarse_cfo_hz = (int32_t)ieee154_dsp_freq(rx_iq, RX_OUT);
-		ieee154_dsp_steps(rx_iq, RX_OUT, m->steps);
+		mix_decimate(b.words, high->rx_iq);
+		m->cfo_hz = (int32_t)ieee154_dsp_cfo(high->rx_iq, RX_OUT, &p, &n);
+		m->coarse_cfo_hz = (int32_t)ieee154_dsp_freq(high->rx_iq, RX_OUT);
+		ieee154_dsp_steps(high->rx_iq, RX_OUT, m->steps);
 		/* Relative to the decimated full scale, +-8192 on each axis. */
 		m->power_dbfs = p > 0.0f ? (int32_t)lrintf(10.0f * log10f(p / (8192.0f * 8192.0f)))
 					 : -200;
@@ -952,6 +971,14 @@ static int sdr154_init(const struct device *dev)
 {
 	struct sdr154_data *d = dev->data;
 
+#if defined(CONFIG_ESP_SDR_IEEE802154_HIGH_RAM_APP)
+	high = ieee154_esp_sdr_high_ram(sizeof(*high));
+	if (high == NULL) {
+		/* The application gives this RAM to something else this boot. */
+		return -ENODEV;
+	}
+	__ASSERT_NO_MSG(IS_ALIGNED(high, __alignof__(*high)));
+#endif
 	crumb(IEEE154_ESP_SDR_EV_BOOT, 0);
 	ieee154_phy_init();
 	tmpl_init();
@@ -963,7 +990,7 @@ static int sdr154_init(const struct device *dev)
 	 * system threads, so a PHY slower than real time drops samples
 	 * (counted) instead of starving USB and the shell.
 	 */
-	k_thread_create(&sdr154_rx_thread, sdr154_rx_stack, K_KERNEL_STACK_SIZEOF(sdr154_rx_stack),
+	k_thread_create(&sdr154_rx_thread, high->rx_stack, K_KERNEL_STACK_SIZEOF(high->rx_stack),
 			rx_thread_fn, d, NULL, NULL,
 			IS_ENABLED(CONFIG_ESP_SDR_IEEE802154_RING)
 				? CONFIG_ESP_SDR_IEEE802154_PHY_PRIORITY
@@ -980,8 +1007,8 @@ static int sdr154_init(const struct device *dev)
 #if defined(CONFIG_ESP_SDR_IEEE802154_RING)
 	/* The ring takes CPU 1 whole (interrupts masked); the PHY runs on CPU 0. */
 	/* Cooperative: interrupts between the ring's polls must not preempt it. */
-	k_thread_create(&sdr154_ring_thread, sdr154_ring_stack,
-			K_KERNEL_STACK_SIZEOF(sdr154_ring_stack), ring_thread_fn, d, NULL, NULL,
+	k_thread_create(&sdr154_ring_thread, high->ring_stack,
+			K_KERNEL_STACK_SIZEOF(high->ring_stack), ring_thread_fn, d, NULL, NULL,
 			K_PRIO_COOP(2), 0, K_FOREVER);
 	k_thread_name_set(&sdr154_ring_thread, "sdr154_ring");
 #if defined(CONFIG_SCHED_CPU_MASK)

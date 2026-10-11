@@ -13,12 +13,12 @@ __esp_sdr_bank1_org = 0x3fcc0000;
 __esp_sdr_bank_org = 0x3fcd0000;
 __esp_sdr_bank_len = 0x10000;
 
-.esp_sdr_bank0 __esp_sdr_bank0_org (NOLOAD) :
-{
-	__esp_sdr_bank0_start = .;
-	. += __esp_sdr_bank_len;
-	__esp_sdr_bank0_end = .;
-}
+/*
+ * Bank 0 is only reserved, not a section: an image whose ring may stay off
+ * (apps/multiapp) places buffers there that are used only while it is off.
+ */
+__esp_sdr_bank0_start = __esp_sdr_bank0_org;
+__esp_sdr_bank0_end = __esp_sdr_bank0_org + __esp_sdr_bank_len;
 
 .esp_sdr_bank1 __esp_sdr_bank1_org (NOLOAD) :
 {

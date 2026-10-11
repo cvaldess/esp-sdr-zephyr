@@ -53,8 +53,27 @@ extern "C" {
 /**
  * Place a static buffer in the internal SRAM above the capture bank (on the
  * ESP32-S3 about 38 KiB, DMA capable). It is not zeroed at boot: buffers only.
+ * A multiapp extension defines it beforehand: it has no fixed addresses.
  */
+#ifndef ESP_SDR_HIGH_RAM
 #define ESP_SDR_HIGH_RAM __attribute__((section(".esp_sdr_high")))
+#endif
+
+/**
+ * `static type name dims __aligned(align) ESP_SDR_HIGH_RAM`: an app's buffer
+ * that must be internal RAM (DMA, ring threads). A multiapp extension gets it
+ * from the host's area instead.
+ */
+#ifndef ESP_SDR_HIGH_BUF_DEFINE
+#define ESP_SDR_HIGH_BUF_DEFINE(type, name, dims, align)                                          \
+	static type name dims __aligned(align) ESP_SDR_HIGH_RAM
+#endif
+
+/** A kernel thread stack of an app in the high region, as ESP_SDR_HIGH_BUF_DEFINE(). */
+#ifndef ESP_SDR_HIGH_STACK_DEFINE
+#define ESP_SDR_HIGH_STACK_DEFINE(name, size)                                                     \
+	static Z_KERNEL_STACK_DEFINE_IN(name, size, ESP_SDR_HIGH_RAM)
+#endif
 
 /**
  * Native dump engine rates; values are the upstream protocol rate indices.

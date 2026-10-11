@@ -27,6 +27,14 @@ config ESP_SDR_IEEE802154_RING
 	  the PHY on CPU 0 through a sample ring in internal RAM. Without it, receive
 	  uses separate bank captures of about 1 ms.
 
+config ESP_SDR_IEEE802154_HIGH_RAM_APP
+	bool "Internal RAM from the application"
+	help
+	  The driver's buffers and thread stacks (about 22 KiB, otherwise in
+	  the high region) come from ieee154_esp_sdr_high_ram(), which the
+	  application defines, so it can use that RAM otherwise in boots
+	  without the radio (apps/multiapp).
+
 config ESP_SDR_IEEE802154_RX_PRIORITY
 	int "Receive thread priority (ring or burst captures)"
 	default 10
