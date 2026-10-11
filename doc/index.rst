@@ -26,6 +26,7 @@ The API reference of the library is generated with Doxygen:
    apps/link
    apps/wpan
    apps/rfprobe
+   apps/multiapp
 
 .. toctree::
    :maxdepth: 1
@@ -36,6 +37,7 @@ The API reference of the library is generated with Doxygen:
    signal_path
    ieee802154
    testing
+   multiapp
    zigbit-reference
 
 Indices

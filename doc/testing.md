@@ -8,7 +8,7 @@ end to end under twister (that one is deployed by hand, see below). Four tiers:
 | Unit | `tests/unit/` | host (`native_sim/native/64`), no board | Portable code as ztest suites: the 802.15.4 PHY (`ieee154_phy`), the driver's signal processing (`ieee154_dsp`), link RS(255,223) (`link_rs`) and Hamming(128,120) (`link_hamming`), sdr_stream's I/Q packing (`iq_pack`). With `IEEE154_TABLES` set, `ieee154_phy` and `ieee154_dsp` also print their sweep tables (`scripts/unit-tables.sh`). |
 | Integration | `tests/integration/` | one real board | ztest on the radio itself. `esp_sdr_rx_api`: the receive API's contract (error codes, bounds, one real capture per supported rate). Needs no antenna, peer or host tool and never transmits. |
 | Regression | `tests/regression/` | two real boards | pytest through twister's multi-board harness. `ieee802154_link`: the C6 native radio and the S3 software radio exchange `apps/wpan` test frames both ways on channels 11, 15, 20 and 25, plus ACK requests. Guards against the two bugs that only ever showed as lost frames between real boards (`doc/hardware-quirks.md`). `lo_tuning`: the S3 sends tones to the C6 at overlapping LO frequencies, through the 5/6 divider and directly tuned; guards the transmit divider and `-ERANGE`. |
-| Smoke | `apps/*/sample.yaml` | build, and one board | Every app builds for its boards; `apps/capture` also boots on the S3 and the C6 and must print `esp-sdr rx: ready` (console harness). |
+| Smoke | `apps/*/sample.yaml` | build, and one board | Every app builds for its boards; `apps/capture` also boots on the S3 and the C6 and must print `esp-sdr rx: ready` (console harness); `apps/multiapp` boots into an app from its file on the FAT volume (pytest, `sample.esp_sdr.multiapp.hil`). |
 
 ## Continuous integration
 
@@ -71,6 +71,24 @@ Each test has one id per board: `integration.esp_sdr.rx_api.c6` and `.s3`.
   has its own CDC-ACM shell and DFU. Deploy it with `west dfu -d <build dir> -s <usb serial>`
   and read its CDC-ACM console. The suite sleeps 10 s after boot so the host can enumerate the
   port first: CDC-ACM does not replay output printed before a reader attaches.
+
+## multiapp desk check (one board)
+
+`sample.esp_sdr.multiapp.hil` builds the multiapp host with `hello` as its autostart app
+(`apps/multiapp/hil.conf`). `scripts/twister-flash.py` puts the image on the S3 with `west dfu`
+and, because the build has a FAT volume image, the volume with `west dfu --storage`;
+`apps/multiapp/pytest/test_multiapp.py` then checks that every app's file is on the volume and
+equals its built-in copy, that the boot ran `hello` from its file, and that hello's commands
+answer, its PSRAM atomics included. From the repository root, with the S3 attached:
+
+```
+west twister -T apps/multiapp -s sample.esp_sdr.multiapp.hil --device-testing \
+    --hardware-map tests/regression/hardware-map.yaml \
+    --flash-command "$PWD/scripts/twister-flash.py"
+```
+
+About a minute, flashing included. It leaves the test image on the board: `west dfu` and
+`west dfu --storage` of a normal multiapp build afterwards.
 
 ## Regression tests (two boards)
 
