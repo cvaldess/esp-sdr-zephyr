@@ -1,10 +1,10 @@
 # Undocumented registers of the ESP32-S3 and ESP32-C6 radio
 
 What this project knows about the hardware registers that `lib/esp_sdr` relies
-on and that Espressif does not document, or documents without the behaviour
-that matters: where each one is, its fields, what it does, the values seen, and
-how sure we are. How the library copes with the radio's quirks is in
-[hardware-quirks.md](hardware-quirks.md).
+on, or that a later feature could use, and that Espressif does not document, or
+documents without the behaviour that matters: where each one is, its fields,
+what it does, the values seen, and how sure we are. How the library copes with
+the radio's quirks is in [hardware-quirks.md](hardware-quirks.md).
 
 ## How to read this page
 
@@ -13,10 +13,15 @@ how sure we are. How the library copes with the radio's quirks is in
   3:2 of register 12 in analog block 0x62 (upstream esp-sdr uses the same form).
 - Evidence paths are relative to this repository (`lib/`, `doc/`, ...) or, for
   files outside it, to the west workspace: `modules/lib/esp-sdr/` is upstream
-  esp-sdr (commit 1fe5535), `modules/hal/espressif/` the HAL. "Bench" with a
-  date is a measurement with scratch tools that are not in the repository:
-  2026-10-05 and 06 on two XIAO ESP32S3, 2026-10-07 to 09 on one XIAO ESP32S3
-  and one XIAO ESP32C6.
+  esp-sdr (commit 1fe5535), `modules/hal/espressif/` the HAL. `git show
+  <commit>:<path>` cites a file at an older upstream commit: run it in
+  `modules/lib/esp-sdr/` (34bb79b and e605684 are in the history of 1fe5535).
+  "Build" with a date is the link map of an app of this repository built that
+  day. "Bench" with a date is a measurement with scratch tools that are not in
+  the repository:
+  2026-10-05 and 06 on two XIAO ESP32S3, 2026-10-07 to 09 and 2026-10-11 on one
+  XIAO ESP32S3 and one XIAO ESP32C6 (2026-10-11: the C6 transmitting into the
+  S3 over coax, the S3's receive gain fixed at index 0).
 - ESP32-S3 entries marked decompile cite the blob object they were read from,
   as in "S3 `phy_i2c.o`", and the function where the text names one. The
   `phy_*.o` objects except `phy_test.o` are members of
@@ -27,13 +32,19 @@ how sure we are. How the library copes with the radio's quirks is in
   so argument values below come from the disassembly.
 - ESP32-C6 entries marked decompile come from `objdump` of the C6 blobs
   (`modules/hal/espressif/zephyr/blobs/lib/esp32c6/libphy.a`,
-  `zephyr/blobs/lib/esp32c6/librftest.a`) and of the C6 ROM. ROM addresses
-  refer to `esp32s3_rev0_rom.elf` and `esp32c6_rev0_rom.elf` of esp-rom-elfs
-  20230320.
+  `zephyr/blobs/lib/esp32c6/librftest.a` and, where an entry names them,
+  `libcoexist.a` and `libble_app.a` from the same directory as `libphy.a`) and
+  of the C6 ROM. ROM addresses refer to `esp32s3_rev0_rom.elf` and
+  `esp32c6_rev0_rom.elf` of esp-rom-elfs 20230320.
+- ESP32-C5 and ESP32-C61 entries marked decompile come from `objdump` of those
+  chips' `libphy.a`, `libcoexist.a` and `libble_app.a` in
+  `modules/hal/espressif/zephyr/blobs/lib/esp32c5/` and `esp32c61/`, their
+  `librftest.a` from esp-phy-lib e37ecdc9, and their ROMs from esp-rom-elfs
+  20260528.
 
 | Confidence | Meaning |
 |---|---|
-| measured | Seen on the bench boards or on air between them. |
+| measured | Seen on the bench boards, on air between them, or in the link map of a build. |
 | working | The library depends on it and works; the meaning is not proven beyond that. |
 | upstream | Stated by upstream esp-sdr (code, comments, docs); not re-checked here. |
 | decompile | Read from vendor code (decompile or disassembly); not confirmed on hardware. |
@@ -346,36 +357,6 @@ ring run. The reading as lane selectors is upstream's.
 `esp_sdr_ring_run()` disables it on its CPU (hardware-quirks.md, "Capture and
 DAC engine"; `lib/esp_sdr/src/esp_sdr_ring.c:462-491`).
 
-### ESP32-C6 dump engine
-
-Same control bits at another address, from upstream (`families/c5_c6_c61`,
-`targets/esp32c6/chip.h`); 80 MS/s only, no DAC side known (the C6 `dactrig()`
-only writes a ramp into 0x40840000 and touches no register, *decompile* C6
-`librftest.a` `mac_common.o`). Base 0x600a9000 has no name in the HAL.
-
-| Address | Bits | Function | Values | Evidence |
-|---|---|---|---|---|
-| 0x600a9004 | 31, 19, 18, 13:0 | DUMP_CTRL: RUN, TRIGGER, DONE, COUNT as on the S3; no rate field. Write COUNT with DONE first to clear a stale DONE, as the stock sequence does. | 256 to 16380; 16380 samples take about 205 us | *working* `lib/esp_sdr/src/esp_sdr_priv.h:77-81`, `lib/esp_sdr/src/esp_sdr_rx.c:302-310`; *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:43-46` |
-| 0x600a9004 | 17 | Circular ring, in upstream's C6 ring code. Not used here. | | *upstream* `modules/lib/esp-sdr/main/common/ring_capture.c:104, 1499-1505` |
-| 0x600a9008 | 18:15 | Dump source; 15 = raw receive I/Q, as the stock `adctrig()`. | 15 | *working* `lib/esp_sdr/src/esp_sdr_priv.h:82-84`; *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:6, 39` |
-| 0x600a9008 | low bits, read | Live write index in upstream's ring code (same address). | | *upstream* `modules/lib/esp-sdr/main/common/ring_capture.c:96, 1507` |
-| 0x600a9014 | 24:0 | Lane selectors as S3 0x60033d90 (field cleared, then set). | `0x000c2040` | *working* `lib/esp_sdr/src/esp_sdr_rx.c:258`; *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:38` |
-| 0x600a20b4 | 0 | Cleared before every capture, as the stock sequence; function unknown (upstream's ESP32-H2 notes call it the trigger source). | 0 | *working* `lib/esp_sdr/src/esp_sdr_rx.c:261`; *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:40`, `modules/lib/esp-sdr/docs/esp32h2.md:20` |
-| 0x600a9804, 0x600a980c, 0x600a9814 | all; all; 18:0 | Documented MODEM_SYSCON clock registers (CLK_CONF, with CLK_DATA_DUMP_EN in bit 31 and CLK_DATA_DUMP_MUX in bit 21; CLK_CONF_POWER_ST; CLK_CONF1). Undocumented part: the engine needs them forced on before each capture, as the vendor's `rftest_init()`/`phy_set_clk_conf()` does. | 0xffffffff, 0xffffffff, 0x7ffff (written 9804, 9814, 980c) | *working* `lib/esp_sdr/src/esp_sdr_rx.c:255-257`; *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:35-36`; `modules/hal/espressif/components/soc/esp32c6/include/modem/modem_syscon_reg.h:21-27, 82-87, 151, 281` |
-
-More C6 sources and a transmit lead, none used or proven:
-
-- 0x600a900c latches the ESP32-C5 replay layout: size 13:0, loop 19, repeat
-  count 27:20, enable 31 (not the C5's half-rate bit 17). Enabled, bit 18 (done)
-  sets after one pass, and stays clear with loop set, also with no SRAM block
-  owned. No C6 blob or ROM touches it; RF output is untested (*measured* bench
-  2026-10-11, register writes and reads only).
-- The C6 `adctrig()` takes sources beyond raw I/Q: 0 to 2 (unnamed taps), 3 and
-  4 (transmit path), 5 (picked by an 8-bit selector in the Wi-Fi MAC at offset
-  0x4e30), and a "BLE baseband" mode 8 with lanes 0xe to 0x11 and
-  `BTBB_DUMP_SEL`. A decimated tap would allow continuous C6 receive
-  (*decompile* C6 `librftest.a` `mac_common.o`).
-
 ESP32-S3 blocks that could take work off the CPU, none tried (*decompile* S3
 `libphy.a`):
 
@@ -388,6 +369,117 @@ ESP32-S3 blocks that could take work off the CPU, none tried (*decompile* S3
   are seen while frames are sent. Lane selectors in 0x60033d90 are 6 bits
   wide; only 0 to 3 are ever used.
 - Spur notch at 0x6001d014 and 0x6001d018.
+
+### ESP32-C6 dump and DAC engine
+
+Same RUN, TRIGGER, DONE and COUNT bits as the S3 at another address
+(*upstream* `modules/lib/esp-sdr/main/families/c5_c6_c61/receiver.c`,
+`modules/lib/esp-sdr/main/targets/esp32c6/chip.h`). Receive runs at 80 MS/s
+only; the transmit side is a DAC engine at 0x600a900c (below), which no vendor
+code programs: the C6 `dactrig()` only writes a ramp into 0x40840000
+(*decompile* C6 `librftest.a` `mac_common.o`). Base 0x600a9000 has no name in
+the HAL.
+
+| Address | Bits | Function | Values | Evidence |
+|---|---|---|---|---|
+| 0x600a9004 | 31, 19, 18, 13:0 | DUMP_CTRL: RUN, TRIGGER, DONE, COUNT as on the S3; no rate field. Write COUNT with DONE first to clear a stale DONE, as the stock sequence does. | 256 to 16380; 16380 samples take about 205 us | *working* `lib/esp_sdr/src/esp_sdr_priv.h:77-81`, `lib/esp_sdr/src/esp_sdr_rx.c:302-310`; *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:43-46` |
+| 0x600a9004 | 17 | Circular ring, in upstream's C6 ring code. Not used here. | | *upstream* `modules/lib/esp-sdr/main/common/ring_capture.c:104, 1499-1505` |
+| 0x600a9008 | 18:15 | Dump source; 15 = raw receive I/Q, as the stock `adctrig()` (see "Receive rate"). | 15 | *working* `lib/esp_sdr/src/esp_sdr_priv.h:82-84`; *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:6, 39` |
+| 0x600a9008 | low bits, read | Live write index in upstream's ring code (same address). | | *upstream* `modules/lib/esp-sdr/main/common/ring_capture.c:96, 1507` |
+| 0x600a9008 | 23:21 | Not a rate field, unlike on the C5 and C61, where these bits take a rate code: written bits do not stay, and captures and replays keep their timing. | | *measured* bench 2026-10-11; C5 and C61: *upstream* `modules/lib/esp-sdr/main/targets/esp32c5/chip.h:11`, `modules/lib/esp-sdr/main/targets/esp32c61/chip.h:20-21` |
+| 0x600a9014 | 24:0 | Lane selectors as S3 0x60033d90 (field cleared, then set). | `0x000c2040` | *working* `lib/esp_sdr/src/esp_sdr_rx.c:258`; *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:38` |
+| 0x600a20b4 | 0 | Cleared before every capture, as the stock sequence. The C6 `adctrig()` clears it in every mode but 8, the BLE baseband dump, which sets it (see "Receive rate"); upstream's ESP32-H2 notes call it the trigger source. | 0 | *working* `lib/esp_sdr/src/esp_sdr_rx.c:261`; *decompile* C6 `librftest.a` `mac_common.o`; *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:40`, `modules/lib/esp-sdr/docs/esp32h2.md:20` |
+| 0x600a9804, 0x600a980c, 0x600a9814 | all; all; 18:0 | Documented MODEM_SYSCON clock registers (CLK_CONF, with CLK_DATA_DUMP_EN in bit 31 and CLK_DATA_DUMP_MUX in bit 21; CLK_CONF_POWER_ST; CLK_CONF1). Undocumented part: the engine needs them forced on before each capture and each playback, as the vendor's `rftest_init()`/`phy_set_clk_conf()` does. | 0xffffffff, 0xffffffff, 0x7ffff (written 9804, 9814, 980c) | *working* `lib/esp_sdr/src/esp_sdr_rx.c:255-257`; *measured* bench 2026-10-11 (playback); *upstream* `modules/lib/esp-sdr/main/targets/esp32c6/chip.h:35-36`; `modules/hal/espressif/components/soc/esp32c6/include/modem/modem_syscon_reg.h:21-27, 82-87, 151, 281` |
+
+**Receive rate.** The C6 `adctrig()` starts only mode 0 by software; the other
+modes wait for a hardware event. It writes no part of 0x600a9008 but the source
+field and never reads the argument that the C5 and C61 versions turn into a
+rate (*decompile* C6 `librftest.a` `mac_common.o`):
+
+| `adctrig()` mode | Source | Also |
+|---|---|---|
+| 0 | 15 | software start |
+| 1, 3 | 1 | |
+| 2 | 0 | |
+| 4 | 2 | |
+| 5 | 3 | tries to send a frame each poll, at most one per `tx_frame_delay_us` (800 by default) |
+| 6 | 4 | as mode 5 |
+| 7 | 5 | Wi-Fi MAC event selector: 0x600a4e30 bit 8 set, bits 7:0 the event |
+| 8 | 0 | 0x600a20b4 bit 0 set, lanes 0x0e to 0x11, BLE receiver started |
+
+Upstream found no other source that gives a uniform stream, and neither
+`adc_rate_set()` nor candidate divider bits changed the timing (*upstream*
+`git show 34bb79b:docs/rx-controls.md`, "C6 sample-rate investigation").
+Upstream's C6 ring is gapless at 80 MS/s, rotating SRAM blocks 1 and 2 under a
+circular DUMP_CTRL (bit 17, count 16384), and consumes it as FFT windows
+(*upstream* `modules/lib/esp-sdr/main/common/ring_capture.c:96-131,
+1485-1507`): the 160 MHz CPU has 2 cycles per sample, too few to decimate the
+whole stream.
+
+**DAC_TRIG, 0x600a900c** (transmit side, 8 bytes above DUMP_CTRL as on the S3;
+the rate is bit 15 as on the S3, not bit 17 as in upstream's C5 replay)
+
+| Bits | Name | Function | Values | Evidence |
+|---|---|---|---|---|
+| 31 | RUN | Written with COUNT and bit 19 clear: one pass, with no trigger pulse as on the S3. | | *measured* bench 2026-10-11 |
+| 27:20 | | Read back as written; effect untested. The S3 `dactrig()` writes the count's low byte here (see the S3 DAC_TRIG); upstream's C5 replay uses it as a repeat count, 0 meaning endless with bit 19 set. | | *measured* bench 2026-10-11 (read-back only); *upstream* `git show e605684:main/c5_main.c`, comment above `emit_dma()` |
+| 19 | LOOP | Set with RUN (bits 27:20 at 0): the engine replays the first COUNT words back to back until RUN is cleared; DONE stays clear. | | *measured* bench 2026-10-11 |
+| 18 | DONE | Sets after one pass. | | *measured* bench 2026-10-11 |
+| 15 | 80 MS/s | 1 = 80 MS/s, 0 = 40 MS/s. | a pass takes 4 cycles of the 160 MHz CPU per word at 40 MS/s (COUNT 1000 to 16000), 2 at 80 MS/s (COUNT 16000) | *measured* bench 2026-10-11 |
+| 13:0 | COUNT | Words to play from the start of the owned block. | up to 16383 | *measured* bench 2026-10-11 |
+
+Bits 14, 16 and 17 do not read back. Measured on the bench, 2026-10-11:
+
+- One word per sample, I in bits 9:0 and Q in 19:10, as for the S3's DAC (see
+  "Sample word formats"): a complex tone of k cycles in n words plays at +k/n
+  of the rate (200 cycles in 16000 words: 0.5 MHz at 40 MS/s, 1 MHz at
+  80 MS/s), its image 37 to 40 dB down. All-zero words play nothing, a constant
+  word a carrier.
+- What playback needs: the dump clocks forced on as for a capture (without them
+  DONE still sets on time but nothing reaches the antenna), SRAM block 2 handed
+  to the engine (0x60095004 bits 11:8 = 4, samples from 0x40840000), and the
+  transmit chain on without its tone: the vendor CW
+  (`esp_phy_wifi_tx_tone(1, 6, 80)`), then bit 18 of 0x600a0420 and 0x600a0424
+  cleared. That leaves the DAC source select, 0x600a0414 bits 1:0, at 0, the
+  tone generator's setting (see "Front end").
+- While the engine owns the block, CPU stores are dropped and loads return
+  other data, as during a capture.
+
+No vendor blob or ROM of the C6, C5 or C61 writes this register (*decompile*).
+Only upstream code does: the C5 transmitter of its first upload
+(`git show e605684:main/c5_main.c`, `emit_dma()`, removed in ab76232), and the
+C61 capture and ring code, which writes 0 to it before each capture
+(*upstream* `modules/lib/esp-sdr/main/targets/esp32c61/chip.h:12, 17`,
+`modules/lib/esp-sdr/main/common/ring_capture.c:1493`). Upstream's S31 code
+clears bit 31 of its counterpart, 0x2010900c, when it sets up the dump
+(*upstream* `modules/lib/esp-sdr/main/targets/esp32s31/burst/receiver.c:37,
+123`).
+
+Leads for a continuous C6 receive below 80 MS/s, none tried:
+
+- The modem diagnostic bus into PARL_IO. A third-party project, not re-checked
+  here, reports for the ESP32-C5 that the dump's I/Q MSBs appear on MODEM_DIAG
+  (Q[9:6] on lines 9:6, I[9:6] on 19:16), and that routed through the GPIO
+  matrix into PARL_IO, a cyclic 40 MS/s capture takes every second sample of
+  the 80 MS/s bus as 4+4-bit I/Q, bit-perfect in a bounded capture (it claims
+  no gapless running across ring wraps;
+  [Twotoz/C5VRX](https://github.com/Twotoz/C5VRX/blob/a165e19db47ebd49051217d7c968a1b8220c20fb/docs/continuous-iq-findings.md)).
+  The C6 selector registers are 0x600a9018 and 0x600a901c where the C5 has
+  0x600a9404 and 0x600a9408: `gpio_diag_init_ble()` writes 1 to the first and
+  `coex_hw_debug_matrix_config()` 2 to the second, on both chips (*decompile*
+  C6 and C5 `libble_app.a` `gpio_diag.c.o`, `libcoexist.a` `coexist_hw.o`). On
+  the C6 each then enables diag lines in `IO_MUX_MODEM_DIAG_EN` (0x600900bc,
+  bit i routes modem_diag[i] into the GPIO matrix,
+  `modules/hal/espressif/components/soc/esp32c6/register/soc/io_mux_reg.h:325-336`):
+  0xffff0000 and 0x0000000f. Which selector value puts receive I/Q on the C6
+  bus is unknown. Sampling below 80 MHz decimates without filtering, so the
+  analog low-pass has to be narrowed first.
+- The 802.11p clock mode: `phy_11p_set(1, m)` writes 0x600a981c (MODEM_SYSCON
+  WIFI_BB_CFG) bits 4:2 = 4 for m = 0, else 5, presumably for 10 and 5 MHz
+  channels, and clears 0x600a7030 bit 5 (*decompile* C6 `libphy.a`
+  `phy_feature.o`). Whether the dump follows the slower clock is unknown.
+- The BLE dump (mode 8 above): rate unknown; it runs only while the BLE
+  receiver does.
 
 ### SRAM bank ownership
 
@@ -430,6 +522,13 @@ register and restores it after each use (`lib/esp_sdr/src/esp_sdr_rx.c:246-278`,
   `lib/esp_sdr/esp_sdr_bank_c6.ld:18-20`). On the RISC-V core the switch must
   land before the engine starts: a `fence rw, rw` and a read-back follow each
   write (*working* `lib/esp_sdr/src/esp_sdr_rx.c:262-265, 274-277`).
+- ESP32-C6: only block 2 can be the engine's. Block 3 ends in the ROM's .bss
+  and .data (0x4087e610 to 0x40880000), which ROM functions use at any time
+  (`modules/zephyr/soc/espressif/esp32c6/memory.h:29-40`), and a Zephyr image
+  with Wi-Fi fills blocks 0 and 1 (the C6 build of `apps/rfprobe` has `_end` at
+  0x408366b0 and its libc heap above that up to block 2,
+  `lib/esp_sdr/esp_sdr_bank_c6.ld:29-30`), so upstream's rotation over blocks 1
+  and 2 does not fit (*measured* build 2026-10-11).
 
 ### AGC force
 
@@ -455,7 +554,7 @@ with a 50 ohm load: AGC -25.7, index 0 -46.0, 40 -39.0, 60 -27.0, 82 -19.9 dBFS 
   `modules/lib/esp-sdr/main/targets/esp32s3/receiver.c:107-113`;
   `lib/esp_sdr/src/esp_sdr_rx.c:164-166`).
 
-### Front end: force TX on
+### Front end: force TX on, tones, DAC source
 
 ESP32-S3, FE block (`DR_REG_FE_BASE` 0x60006000; the HAL has the base, no
 registers).
@@ -474,13 +573,46 @@ writes gain memory slot 0. That this is the slot the front end then uses holds
 only while bits 25:18 read 0; the code does not check it
 (`lib/esp_sdr/src/esp_sdr_priv.h:164-169`).
 
-ESP32-C6, *decompile*, unused (the library has no C6 transmit path):
-`force_txon(1)` clears `0x600a70dc` bit 16 and sets `0x600a0910` bit 9, then
-bits 11:10; `force_txon(0)` clears them in reverse (C6 `libphy.a` `phy_reg.o`).
-With a non-zero mode, `force_txon_mode(en, mode, ofs)` sets `0x600a0910` bits
-13:12 and `0x600a28a0` bits 31:30 to 3 when `en` is set and to 0 otherwise.
-`set_dump_mode(x)` clears `0x600a0958` bits 1:0 and writes `0x600a70b8` bits
-2:0 = 1 when x is 0, else 0 (C6 `librftest.a` `phy_test.o`).
+ESP32-C6, unused by the library (it has no C6 transmit path). Entries marked
+*decompile* come from C6 `libphy.a` `phy_reg.o`, `phy_pbus.o`, `phy_init.o`
+and `phy_tx_cal.o`, `librftest.a` `rf_test.o`, `esp_phy_api.o`, `phy_test.o`
+and `wifi.o`, and the C6 ROM:
+
+| Register | Bits | Function | Evidence |
+|---|---|---|---|
+| 0x600a0414 | 1:0 | DAC source select as the vendor uses it: `ram_start_tx_tone_step()` writes 0 with a tone and 3 without, `ram_stop_tx_tone()` writes 3; the ROM tone functions leave it alone. The DAC engine plays with 0 (see "ESP32-C6 dump and DAC engine"); with 3 it is untested. | *decompile*; *measured* bench 2026-10-11 |
+| 0x600a0420, 0x600a0424 | 18; 17:10; 9:0 | Tones 0 and 1: enable, the attenuation negated, the frequency >> 2; bits 31:28 kept, 27:19 written 0. libphy `ram_start_tx_tone_step()` puts the frequency's low two bits in 0x600a042c (bits 1:0 tone 0, 3:2 tone 1); the ROM version splits the frequency so only while 0x600a0420 bit 29 is set, else it writes it unshifted and leaves 0x600a042c alone. The vendor CW leaves tone 0 at 0x00068400 or 0x00068c00: frequency 0, a carrier at the LO. | *decompile*; *measured* bench 2026-10-11 |
+| 0x600a0444 | 19:0 | TX DC value, I in 9:0, Q in 19:10. The C6 `set_txdc_dig(i, q)`, the only code that writes the register, writes only these bits; the identical C61 function writes 0x600a0c08, the register upstream's first C5 code drove CPU-paced I/Q through (`TXDC_REG`, `emit_iq()`). Untested on the C6. | *decompile* C6 and C61 `librftest.a` `phy_test.o`; *upstream* `git show e605684:main/c5_main.c:32, 211-238` |
+| 0x600a044c | 27, 25, 22 | 27 and 25 set, 22 cleared at init (ROM `fe_reg_init()`, libphy `reg_set_new()`), at the step where the C61's `phy_fe_reg_init()` sets bits 25 (IQ swap) and 26 (inject) of its TX DC register 0x600a0c08. That 25 and 27 are the C6's IQ swap and inject bits is a guess. | *decompile* (the writes; C61 `libphy.a` `phy_reg.o`); *speculative* (the meaning) |
+| 0x600a0418 | 0, 1, 22, 28, 29 | TX DC calibration comparator, as libphy `txdc_cal_new()` drives it: bit 1 enable, bit 0 start, bit 22 done, bits 29 and 28 the comparator outputs for pbus rows 2 and 3 (presumably I and Q), into which the result goes through `rom_pbus_force_test()`. The ROM `txdc_cal()` (0x4000761e) uses another layout on the same register and no C6 library calls it. Shell writes sometimes made a carrier, not reproducibly. | *decompile* `libphy.a` `phy_tx_cal.o`, C6 ROM; *measured* bench 2026-10-11 |
+| 0x600a0910 | 9:8, 11:10, 13:12 | Force pairs, high bit force, low bit value (0 released, 2 forced off, 3 forced on; inferred from all writers): 9:8 receive (2 from `force_txon(1)`, `txon_set(1)` and `force_txrx_off(1)`; 3 from `bt_rx_force()` and ROM `fe_adc_on()`), 11:10 transmit (3 from `force_txon(1)` and `txon_set(1)`; 2 from `force_txrx_off(1)` and ROM `phy_close_pa(1)`), 13:12 BT mode (3 from the BT branch of `force_txon_mode()`, `txon_set(1)` and `bt_rx_force()`). | *decompile* |
+| 0x600a0910 | 15:14, 17:16 | Receive and transmit clock, 3 on, 0 off: ROM `set_rxclk_en()` 0x4000528c and `set_txclk_en()` 0x40005268. | *decompile* |
+
+- `esp_phy_wifi_tx_tone(start, chan, backoff)` (`wifiscwout()`) tunes with
+  `chip_v7_set_chan(chan, 0)` (above 2000 the argument is MHz, truncated to a
+  channel: 2437 to 2441 all give channel 6), forces the analog TX chain on
+  through pbus debug mode (`ram_txcal_debuge_mode()`: `pbus_force_mode(1)`,
+  `ram_pbus_xpd_tx_on()`, the calibrated DC offset, the TX clock), and starts
+  tone 0 at frequency 0,
+  attenuated by the calibrated value + backoff + 12 in quarter dB. It never
+  calls `force_txon()`. Stopping runs ROM `txcal_work_mode()` (0x400047d6):
+  tone off, TX clock off, pbus back to receive and to normal mode. On the bench
+  the carrier arrives at the channel centre (*measured* bench 2026-10-11).
+- `ram_stop_tx_tone()` stops the tones and selects the data path, leaving the
+  pbus forcing and the TX clock on: the C6 counterpart of the C5's
+  `phy_stop_tx_tone(1)`. The DAC engine played with the source left at 0 (see
+  "ESP32-C6 dump and DAC engine"); with 3 it is untested.
+- `force_txon(on)` clears `0x600a70dc` bit 16 and sets `0x600a0910` bits 9:8 to
+  2, then 11:10 to 3; off goes in reverse. In `force_txon_mode(on, bt, idx)`
+  the second argument, which the S3 entries above call mode, acts as a BT flag:
+  the function always forces the power index (`0x600a0410` bit 23, index in
+  21:16), then calls `force_txon(0)` and `force_txon(on)`; only with the flag
+  it first adds 32 to the index, stops the hardware frequency engine
+  (`0x600a00c0` bit 26), writes `0x600af4b4` bit 0, `0x600a0910` bits 13:12 and
+  `0x600a28a0` bits 31:30 (all ones with `on`, 0 without), and restarts the
+  engine if it ran before.
+- `set_dump_mode(x)` clears `0x600a0958` bits 1:0 and writes `0x600a70b8` bits
+  2:0 = 1 when x is 0, else 0 (C6 `librftest.a` `phy_test.o`).
 
 ### ESP32-S3 USB PHY select
 
@@ -560,6 +692,7 @@ probably loads a table entry without a fresh VCO calibration
 | receive, in the dump bank | ESP32-S3 | Q | I | unused here; upstream reads 27:20 as gain metadata (unverified) | *measured* `include/esp_sdr/esp_sdr_rx.h:209-225`, bench 2026-10-05; *upstream* `modules/lib/esp-sdr/main/common/ring_capture.c:290, 857` |
 | receive | ESP32-C6 | Q (assumed) | I (assumed) | | same helpers; not checked against a tone |
 | transmit, played by the DAC | ESP32-S3 | I | Q | 0 | *measured* `include/esp_sdr/esp_sdr_tx.h:84-88` |
+| transmit, played by the DAC engine | ESP32-C6 | I | Q | 0 | *measured* bench 2026-10-11 (tone side and image) |
 
 - Each field is 10-bit two's complement, -512 to 511.
 - The receive orientation was found by detuning only the receive LO against a

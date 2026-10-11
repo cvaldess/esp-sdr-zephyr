@@ -63,10 +63,12 @@ release notes show the steps from flashing to gqrx.
 - ESP32-S3 (tested on the Seeed XIAO ESP32S3), SMP or single core. The
   ESP32-C6 (Seeed XIAO ESP32C6) has receive capture only: 80 MS/s bursts
   into SRAM block 2 (0x40840000), analog filter and fixed gain; no transmit
-  (its RF test library has no DAC playback), no ring and no 40 or 16 MS/s
-  rates; the CIC decimated and folded captures work at 80 MS/s. Of the
-  apps, `capture`, `rfprobe` and `wpan` (native radio) run on it; the others
-  need the S3's USB OTG port, PSRAM or transmit.
+  yet (on the bench its DAC engine plays I/Q from SRAM, see "ESP32-C6 dump and
+  DAC engine" in [doc/undocumented-registers.md](doc/undocumented-registers.md)),
+  no ring and no 40 or 16 MS/s receive rates; the CIC decimated and folded
+  captures work at 80 MS/s. Of the apps, `capture`, `rfprobe` and `wpan`
+  (native radio) run on it; the others need the S3's USB OTG port, PSRAM or
+  transmit.
 - Tuning: the API takes 100 to 6000 MHz, but the PLL only locks over a range
   that differs from chip to chip. Below 2210 MHz the LO goes through the 5/6
   divider (PLL at 1.2 times the frequency), for receive and transmit. After
