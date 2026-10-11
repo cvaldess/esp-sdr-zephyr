@@ -6,6 +6,7 @@
  * threads go to the other.
  */
 
+#include <zephyr/app_version.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -17,6 +18,7 @@ LOG_MODULE_REGISTER(link, LOG_LEVEL_INF);
 
 int main(void)
 {
+	printk("link %s\n", APP_VERSION_STRING);
 	app_cpu_pin_system_threads(CONFIG_APP_NET_CPU);
 	if (app_usb_init() != 0) {
 		LOG_ERR("usb init failed");

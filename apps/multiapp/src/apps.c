@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <zephyr/app_version.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/llext/buf_loader.h>
@@ -568,8 +569,8 @@ static int cmd_info(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
-	shell_print(sh, "host build %02x%02x%02x%02x", build_id[0], build_id[1], build_id[2],
-		    build_id[3]);
+	shell_print(sh, "host %s, build %02x%02x%02x%02x", APP_VERSION_STRING, build_id[0],
+		    build_id[1], build_id[2], build_id[3]);
 	if (main_size != 0U) {
 		shell_print(sh, "host main: %zu of %zu bytes of stack used", main_used, main_size);
 	}

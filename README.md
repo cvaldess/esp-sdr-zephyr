@@ -126,6 +126,14 @@ in its `doxygen/` folder. Both treat warnings as errors in CI
 `SPHINXOPTS=-W make html` does the same locally. Outside the shell,
 `pip install -r doc/requirements.txt` and a Doxygen install give the same tools.
 
+## Versioning
+
+`VERSION` is the version of the library and the apps, major.minor.patch in
+Zephyr's format; every app links to it, so `app_version.h` and the signed
+MCUboot image carry it, and each app prints it at boot. Major grows with a
+breaking API change, minor with a compatible API extension or another
+improvement, patch with small fixes and other minor changes.
+
 ## Dependencies
 
 `west.yml` pins:

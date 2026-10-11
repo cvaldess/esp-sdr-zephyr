@@ -5,6 +5,7 @@
  * apps built as extensions (apps.c).
  */
 
+#include <zephyr/app_version.h>
 #include <zephyr/kernel.h>
 
 #include <esp_sdr/esp_sdr.h>
@@ -17,6 +18,7 @@ int main(void)
 {
 	int ret;
 
+	printk("multiapp %s\n", APP_VERSION_STRING);
 	/* Before USB: its interrupt lands on the CPU that allocates it, CPU 1 is the radio's. */
 	app_cpu_pin_system_threads(0);
 	ret = esp_sdr_init();

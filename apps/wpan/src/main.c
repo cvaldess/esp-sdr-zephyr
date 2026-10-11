@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <zephyr/app_version.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/kernel.h>
@@ -942,6 +943,7 @@ int main(void)
 	struct ieee802154_filter f;
 	int ret;
 
+	printk("wpan %s\n", APP_VERSION_STRING);
 #if defined(CONFIG_USB_DEVICE_STACK_NEXT)
 	/* Before USB starts: its controller interrupt lands on the CPU that allocates it. */
 	app_cpu_pin_system_threads(0);

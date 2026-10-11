@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <zephyr/app_version.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 
@@ -192,6 +193,7 @@ int main(void)
 {
 	int ret;
 
+	printk("capture %s\n", APP_VERSION_STRING);
 	for (unsigned int k = 0; k < NFFT; k++) {
 		window[k] = 0.5f - 0.5f * cosf(TWO_PI * (float)k / (float)NFFT);
 		window_gain += (float)NFFT * window[k] * window[k];

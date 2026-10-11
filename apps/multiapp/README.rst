@@ -57,7 +57,7 @@ and, on the shell of the boot into it:
 .. code-block:: none
 
    uart:~$ app info
-   host build 8a61693d
+   host 0.1.0, build 8a61693d
    boot: rfprobe, start 0, USB profile 0x0
    rfprobe (file): text 3002 at 0x42167c5c, data 448, bss 4, rodata 872, 6067 bytes in heaps
      command probe

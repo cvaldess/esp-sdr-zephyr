@@ -7,6 +7,7 @@
  * threads and USB stay on CPU 0.
  */
 
+#include <zephyr/app_version.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -18,6 +19,7 @@ LOG_MODULE_REGISTER(osmosdr, LOG_LEVEL_INF);
 
 int main(void)
 {
+	printk("osmosdr %s\n", APP_VERSION_STRING);
 	/* Before USB starts: its controller interrupt lands on the CPU that allocates it. */
 	app_cpu_pin_system_threads(0);
 	if (app_usb_init() != 0) {

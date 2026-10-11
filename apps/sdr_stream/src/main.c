@@ -7,6 +7,7 @@
 #include <math.h>
 #include <string.h>
 
+#include <zephyr/app_version.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
@@ -213,6 +214,7 @@ static void process(void *p1, void *p2, void *p3)
 
 int main(void)
 {
+	printk("sdr_stream %s\n", APP_VERSION_STRING);
 	LOG_INF("cpus %u, %u MHz, %u-sample bursts", arch_num_cpus(), CONFIG_APP_FREQ_MHZ,
 		CONFIG_APP_RX_BURST_SAMPLES);
 

@@ -21,7 +21,6 @@ source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
 exclude_patterns = ["_build*", "_doxygen", "Thumbs.db", ".DS_Store"]
 
 html_theme = "alabaster"
-html_title = project
 
 intersphinx_mapping = {"zephyr": ("https://docs.zephyrproject.org/latest/", None)}
 
@@ -34,6 +33,10 @@ lexers["mermaid"] = TextLexer()
 DOC = Path(__file__).resolve().parent
 REPO = DOC.parent
 DOXYGEN_HTML = DOC / "_build_doxygen" / "html"
+
+VERSION = dict(re.findall(r"^(\w+) = (\d+)$", (REPO / "VERSION").read_text(), re.M))
+version = release = "{VERSION_MAJOR}.{VERSION_MINOR}.{PATCHLEVEL}".format(**VERSION)
+html_title = f"{project} {release}"
 
 # overview.md shows the README. Its links are relative to the repository root:
 # guides and app READMEs become links to their pages here, other files go to

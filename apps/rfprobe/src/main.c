@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <zephyr/app_version.h>
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/base64.h>
@@ -317,6 +318,7 @@ int main(void)
 {
 	int ret;
 
+	printk("rfprobe %s\n", APP_VERSION_STRING);
 #if defined(CONFIG_USB_DEVICE_STACK_NEXT)
 	/* S3: the USB shell and DFU, and the trial watchdog that reverts an image that hangs. */
 	if (app_usb_init() != 0) {
