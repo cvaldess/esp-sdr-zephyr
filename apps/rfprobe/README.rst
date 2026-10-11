@@ -29,7 +29,7 @@ Building and flashing
 
    # ESP32-S3: CDC-ACM shell and DFU through MCUboot, like the other S3 apps
    west build -d build/rfprobe-s3 --sysbuild -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/rfprobe
-   west dfu -d build/rfprobe-s3
+   west flash -d build/rfprobe-s3    # first install; later: west dfu -d build/rfprobe-s3
 
 The S3 build runs on one core without PSRAM; its USB product string is
 ``ESP-SDR probe``.

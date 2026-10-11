@@ -61,13 +61,7 @@ The sample needs MCUboot (sysbuild) and the manual gain blob:
    west build --sysbuild -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/sdr_stream
    west flash
 
-The first flash goes over USB-Serial-JTAG. From then on the app owns the USB
-port, so RTS/DTR can no longer reset the chip into the ROM bootloader. Update
-over DFU instead:
-
-.. code-block:: console
-
-   west dfu -s <usb serial>
+Later updates: ``west dfu -s <usb serial>`` (see ``apps/osmosdr/README.rst``).
 
 Receiving
 *********
@@ -125,11 +119,11 @@ receiver:
 .. code-block:: shell
 
    # tone or chirp from A to B, decimated capture at B, cs16 + json on a real time axis
-   python3 esp_sdr_lab.py link --signal chirp --offset 0 --span 80000 --tx-rate 250000 \
-       --tx-bits 12 --rx-bits 12 --out chirp.cs16
+   python3 esp_sdr_lab.py link --tx <serial> --rx <serial> --signal chirp --offset 0 \
+       --span 80000 --tx-rate 250000 --tx-bits 12 --rx-bits 12 --out chirp.cs16
    # spectrum painter: a picture on the receiver's waterfall, also saved as picture_rx.png
-   python3 esp_sdr_lab.py link --signal image --image picture.png --offset 0 \
-       --tx-rate 250000 --tx-bits 12 --rx-bits 12 --out picture_rx.cs16
+   python3 esp_sdr_lab.py link --tx <serial> --rx <serial> --signal image --image picture.png \
+       --offset 0 --tx-rate 250000 --tx-bits 12 --rx-bits 12 --out picture_rx.cs16
    # the same picture to an IQ file, no boards
    python3 esp_sdr_lab.py paint picture.png --out picture.cs16
 

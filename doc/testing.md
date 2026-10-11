@@ -148,11 +148,12 @@ What passes: on channels 11, 15, 20 and 25, in both directions, 100 test frames 
 spacing. Every frame the transmitter completed must arrive, none corrupt or twice. A transmitter may
 fail up to 3 of the 100 itself: the S3's DAC generator fills a block late about once in 400 frames
 and cuts the frame (`-EIO`), and the C6 now and then reports a tx error of its own. That is not a
-receive loss, which is what the test is for (the Wi-Fi MAC interrupt and the sample ring race of
-`doc/hardware-quirks.md` both showed as frames the sender had sent that never arrived), so it is
-bounded loosely and the receiver is held to what the transmitter reports as sent. The ACK check
-sends 20 frames with an ACK request from the S3 to the C6 and allows 2 to fail or go unanswered.
-When a check fails, the message carries `wpan status` of both boards.
+receive loss, which is what the test is for (the Wi-Fi MAC interrupt, `doc/hardware-quirks.md`,
+and the sample ring generation race, `lib/ieee802154/ieee154_esp_sdr.c`, both showed as frames
+the sender had sent that never arrived), so it is bounded loosely and the receiver is held to what
+the transmitter reports as sent. The ACK check sends 20 frames with an ACK request from the S3 to
+the C6 and allows 2 to fail or go unanswered. When a check fails, the message carries `wpan
+status` of both boards.
 
 `apps/wpan/tools/interop.py --native <C6> --sdr <S3> --channels 11,15,20,25` runs a similar exchange
 by hand, with its own defaults (200 frames of 16 bytes, 10 ms apart) and, when a direction fails

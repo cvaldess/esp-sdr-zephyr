@@ -2,9 +2,9 @@
 
 Behaviour of the ESP32-S3 radio, its undocumented capture/DAC engine and the
 toolchain that matters when you build on the `esp_sdr` library, found while
-developing `apps/link` and `apps/sdr_stream`. Each entry says what happens,
-how it shows up, and where the code deals with it. Measurements are from two
-XIAO ESP32S3 boards cabled through a 30 dB attenuator.
+developing the apps. Each entry says what happens, how it shows up, and where
+the code deals with it. Link measurements: two XIAO ESP32S3 boards through a
+30 dB attenuator; C6 entries: one XIAO ESP32C6.
 
 ## Radio
 
@@ -24,7 +24,7 @@ and comparing the AGC force register (`0x6001c02c`) does not detect it:
 `force_rx_gain()` writes other registers too.
 
 **How it is handled.** The library re-forces the gain at a capture when the
-last force is more than 20 ms old (`gain_refresh()` in
+last force is more than 20 ms old (`esp_sdr_rx_gain_refresh()` in
 `lib/esp_sdr/src/esp_sdr_rx.c`, `GAIN_REFRESH_MS`). Each re-force costs 14 to
 51 us. `esp_sdr_get_stats()` counts them, and `link status` prints them on
 its engine line. A turnaround back to receive also forces the gain.
@@ -85,7 +85,8 @@ and 44 saturates the receiver (MER 4 dB).
 | OFDM 16 MHz, DAC at 80 MS/s | about 31 dB |
 | OFDM, DAC at 40 MS/s, 16 / 22 / 26 / 30 MHz | 27 / 25 / 24 / 23 dB |
 
-The MER ceiling rules out 256-QAM (about 33 dB needed) on these boards.
+The MER ceiling rules out 256-QAM on OFDM (about 33 dB needed) and 1024-QAM
+on a single carrier.
 
 ### Carrier and sample clock offset
 
@@ -123,11 +124,9 @@ The capture and DAC playback use the Wi-Fi MAC's undocumented dump engine
 
 - **A bank is off limits while the engine owns it.** The engine writes or
   reads one 64 KiB SRAM bank, selected one-hot in `MAC_DUMP_USAGE`. While it
-  does, the CPUs cannot reach any of that bank. Nothing else may live there.
-  `esp_sdr_bank_tx.ld` reserves the capture bank (0x3fcd0000) and, with
-  `CONFIG_ESP_SDR_BANK1`, the transmit bank (0x3fcc0000), and lowers
-  `_heap_sentry` below both. A link error "DRAM image overlaps the transmit
-  bank" means the DRAM image grew into it.
+  does, the CPUs cannot reach any of that bank, so nothing else may live
+  there. The linker snippets reserve the banks (see Memory); a link error
+  "DRAM image overlaps the ... bank(s)" means the image grew into one.
 - **Short captures go unreported.** The engine can stop early without an
   error. `capture_locked()` writes a sentinel into the first and last word
   and fails the capture if either survives. Checking every word cost 1.2 ms
@@ -156,9 +155,10 @@ The capture and DAC playback use the Wi-Fi MAC's undocumented dump engine
   show how many windows ran and which lines were pending (0x40 is the tick
   timer; 0x41 would be the MAC). With the fix, abandoned units stay at 0 even
   with the C6 sending back to back.
-- **Loop playback wraps only while the trigger is held.** `esp_sdr_dac_loop()`
-  holds the trigger bit; pulsing it plays one pass. Retriggered bursts
-  (`esp_sdr_tx_play_for()`) leave a hole of about 1.35 us each.
+- **Loop playback wraps only while the trigger is held.** Loop playback
+  (`esp_sdr_tx_loop_*()`) holds the trigger bit; pulsing it plays one pass.
+  Retriggered bursts (`esp_sdr_tx_play_for()`) leave a hole of about 1.35 us
+  each.
 - **Turnaround.** The default TX/RX switch with a retune takes about 3 ms.
   `esp_sdr_set_turnaround()` with 50 us and no retune works for packet
   links.
@@ -177,28 +177,43 @@ the top of internal DRAM, laid out by the linker snippets
 second DAC and capture bank, and the ring takes banks 0 to 2 (from
 0x3fcb0000). Each snippet lowers `_heap_sentry` to its lowest bank, so the libc
 heap stays below it, and fails the link if the DRAM image grows into a bank
-(see "A bank is off limits" above). The SRAM between the capture bank and the
-bootloader's loader segment is what `ESP_SDR_HIGH_RAM` places buffers in.
+(see "A bank is off limits" above). `ESP_SDR_HIGH_RAM` places buffers from the
+capture bank's end up to `DRAM_USER_END` (0x3fce9704).
 
 - **Internal RAM is the scarce resource.** Besides the banks, the region
   above the capture bank (`.esp_sdr_high`, `ESP_SDR_HIGH_RAM`) holds `apps/link`'s
   QAM transmit context and OFDM receive context, with about 128 bytes left.
   "high buffers beyond user DRAM" means it is full. Large buffers that are
   not timing critical go to PSRAM (`EXT_RAM_BSS_ATTR`).
-- **The high region reaches 0x3fce9704.** Zephyr's `user_dram_end`
-  (0x3fce4f00) only protects MCUboot's loader while the image loads; the
-  ROM's download-mode buffers above it are free at runtime, so NOLOAD
-  buffers can use the whole range (`DRAM_USER_END`, about 38 KiB).
+- **Why past `user_dram_end`.** Zephyr's `user_dram_end` (0x3fce4f00) only
+  protects MCUboot's loader while the image loads; the ROM's download-mode
+  buffers above it are free at runtime, so NOLOAD buffers can use the whole
+  range (about 38 KiB).
 - **Three banks for the ring** move the DRAM limit to 0x3fcb0000.
-  `apps/osmosdr` fits by trimming the network stack (only the Wi-Fi driver
-  needs it), and putting sample blocks, filter buffers, thread stacks and
-  the DAC backend's buffers (`CONFIG_ESP_SDR_TX_DAC_HIGH_RAM`) in the high
-  region. The Wi-Fi driver needs about 15.5 KiB of kernel heap.
+  `apps/osmosdr` and `apps/wpan` fit by trimming the network stack and moving
+  buffers and stacks into the high region (their READMEs). The Wi-Fi driver
+  peaks at about 15.5 KiB of kernel heap with its default receive buffers,
+  12 KiB with 2 (`doc/multiapp.md`).
 - **Not zeroed at boot.** Neither `.esp_sdr_high` nor PSRAM `.bss` is
   cleared. `apps/link` clears what needs it at init (`link_mac_init()`).
 - **PSRAM is slow for strided or per-sample work.** RS units and payload
   bytes may live there. Hot buffers (FFT work buffers, the RS codeword being
   decoded, which goes on the stack) should not.
+- **Compare-and-set is not atomic in PSRAM.** S32C1I on external RAM lets
+  both CPUs succeed: 2 x 200000 `atomic_inc()` from the two CPUs on one PSRAM
+  counter lost counts. A spinlock, `k_msgq`, `k_mem_slab` or `atomic_t` in
+  PSRAM breaks under SMP. Espressif's HAL emulates it
+  (`esp_cpu_compare_and_set()`), and so does the Zephyr branch `west.yml`
+  pins ("soc: espressif: esp32s3: emulate atomics in PSRAM"): every atomic in
+  the PSRAM range goes through a lock in internal RAM.
+- **No flash access from a thread whose stack is PSRAM.** A flash read or
+  write (the flash API, so also MCUboot's `boot_is_img_confirmed()`) parks
+  the other CPU and suspends the cache, and PSRAM goes with it: the thread's
+  register window spills read back as 0xbad00add, and it double-faults with
+  the other CPU still parked. Before the watchdog is armed (at boot, before
+  USB starts) the board then hangs for good. A multiapp app's `main()` runs on
+  a PSRAM stack, which is why the prelude turns its `app_usb_init()` into a
+  call that does nothing.
 
 ## CPU and toolchain
 
@@ -225,9 +240,9 @@ bootloader's loader segment is what `ESP_SDR_HIGH_RAM` places buffers in.
   flash it is still 1.76 times faster than the same algorithm in C from IRAM
   (85.7 against 150.6 us for 256 points). The S3 mask ROM has the twiddle
   table, but no FFT code.
-- **A CPU with interrupts masked for seconds.** The ring runs on CPU 1
-  under `arch_irq_lock()`: on SMP, `irq_lock()` takes a global lock and
-  would stall the other CPU. Nothing may be pinned to that CPU meanwhile,
+- **The ring CPU runs with interrupts masked except for short windows.** The
+  ring runs on CPU 1 under `arch_irq_lock()`: on SMP, `irq_lock()` takes a
+  global lock and would stall the other CPU. Nothing may be pinned to that CPU meanwhile,
   no flash writes may happen (code from flash would stall), and the vector
   registers it uses are not part of any thread context.
 - **The ring filter's budget** at 16 MS/s is 15 cycles per pair (240 MHz):
@@ -240,7 +255,7 @@ bootloader's loader segment is what `ESP_SDR_HIGH_RAM` places buffers in.
 
 ## Building and flashing
 
-- `apps/link` and `apps/sdr_stream` need `west build --sysbuild` (MCUboot,
+- Every S3 app except `apps/capture` needs `west build --sysbuild` (MCUboot,
   USB DFU). A plain build of an existing sysbuild directory fails with a
   cached-source mismatch.
 - Kconfig values passed with `-D` stay in the CMake cache. An old override
@@ -250,15 +265,36 @@ bootloader's loader segment is what `ESP_SDR_HIGH_RAM` places buffers in.
   its size is no evidence of a new build.
 - Host udev rules match USB product IDs: a build with a new PID cannot be
   opened (or DFU-detached) until the rule covers it. The apps share
-  2fe3:0005; `west dfu` detaches whatever PID runs.
+  2fe3:0005; `west dfu` finds only 2fe3:0005 (app) and 2fe3:ffff (DFU).
 - A shell port serves one process: a host tool holding it (such as a running
   `link_perf.py run`) makes another tool's open of the same board fail.
-- An S3 image that owns the USB OTG port must start it: `app_usb_init()`
-  (`apps/common`) starts the USB device and arms the trial watchdog. An image
-  that skips it never enumerates after a DFU update, and nothing reverts it
-  until a power cycle.
-- The S3's USB PHY stays with USB OTG across a software reset: the OTG driver
-  sets `RTC_CNTL_SW_HW_USB_PHY_SEL` and `RTC_CNTL_SW_USB_PHY_SEL` in
-  `RTC_CNTL_USB_CONF_REG`, which a reset keeps. An image put on by DFU that
-  uses USB-Serial-JTAG instead stays off the bus until a power cycle, unless
-  it clears both bits early in boot.
+- An S3 image put on by DFU must start USB OTG (`app_usb_init()` in
+  `apps/common`, which also arms the trial watchdog) or clear
+  `RTC_CNTL_SW_HW_USB_PHY_SEL` and `RTC_CNTL_SW_USB_PHY_SEL` early in boot.
+  Otherwise it stays off USB until a power cycle: the OTG driver sets both
+  bits and a software reset keeps them.
+- esptool reaches an S3 whose app owns OTG once the app's shell command `usj`
+  has handed the port to the USB-Serial-JTAG (`apps/common`); its reset at
+  the end boots the app, which takes the port back. Hence `west dfu
+  --esptool` writes MCUboot, the image and multiapp's volume in one esptool
+  run: a sysbuild `west flash` runs esptool once per image, and the first
+  one's reset leaves the second without a port.
+- Gate an update on the build's exit status (a pipe into `grep` hides it),
+  else `west dfu` flashes the previous image.
+
+## Debugging
+
+- **JTAG on an image that owns OTG.** On a running app, `usj` takes the USB
+  device off the bus and selects the USB-Serial-JTAG: the PC sees the app go
+  and the USB-Serial-JTAG come, and OpenOCD and esptool work until the next
+  boot of the app. On a hung one, a shutdown handler (or a `PRE_KERNEL_1` hook
+  in a diagnostic build) that clears the two PHY select bits above hands the
+  PHY over at the next restart; the PC sees no disconnect then, and a
+  `USBDEVFS_RESET` ioctl on the port's `/dev/bus/usb` node makes it
+  enumerate.
+- **A reset with no crash record** (`app crash`, `link status`) is the TG0
+  watchdog's first stage: a CPU wedged with interrupts masked.
+- **Stacks.** With `CONFIG_INIT_STACKS`, `kernel thread stacks` after
+  exercising every path; a measured peak up to 80 % of the size is enough
+  margin. An overflowing shell stack shows as 100 % on the logging stack below
+  it. Xtensa frame sizes are in the disassembly as `entry a1, N`.

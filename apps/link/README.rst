@@ -116,15 +116,10 @@ long, the sender's build of the next frame on the other CPU. 64-QAM at
 30 MHz runs close to the code's limit (RS corrects 80 bytes per frame);
 26 MHz is the default. 256-QAM would need about 33 dB MER.
 
-In its 40 MHz mode (``cbw 2``) the radio passes +-18 MHz within +-3 dB end
-to end (a 36 MHz frame at 80 MS/s decodes error free); in the 20 MHz mode
-(``cbw 0``) it fails. The transmitter compresses before the DAC words clip:
-wide frames need ``amp`` 90 or less (90 is the default).
-
-The forced receive gain is lost now and then (after minutes); the AGC then
-raises the quiet noise floor by up to 30 dB and carrier sense stays busy.
-The library forces it again at a capture when the last time is more than
-20 ms ago (``link status``, engine line).
+Wide frames need the 40 MHz mode (``cbw 2``, the default) and ``amp`` 90 or
+less (the default); the forced receive gain is lost now and then and the
+library re-forces it (``link status``, engine line). Details in
+``doc/hardware-quirks.md``.
 
 Building and running
 ********************

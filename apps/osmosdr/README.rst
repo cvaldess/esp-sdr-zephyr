@@ -32,16 +32,15 @@ Building and flashing
 .. code-block:: console
 
    west build --sysbuild -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/osmosdr
-   west dfu -s <usb serial>
+   west flash
 
 The app uses the same USB IDs as the other apps (2fe3:0005, host udev rules
 as in ``apps/sdr_stream/README.rst``); hosts find it by its vendor
 interface and the ``GET_INFO`` magic.
 
-The three ring banks leave little internal RAM: the DRAM image has to end
-below 0x3fcb0000. Sample blocks, filter buffers, the transmit backend's
-buffers and the app's thread stacks live in the SRAM above the capture bank
-(``ESP_SDR_HIGH_RAM``, up to 0x3fce9704).
+The three ring banks leave little internal RAM: sample blocks, filter
+buffers, the transmit backend's buffers and the thread stacks live in
+``ESP_SDR_HIGH_RAM`` (``doc/hardware-quirks.md``, Memory).
 
 The first flash goes over USB-Serial-JTAG. From then on the app owns the USB
 port, so RTS/DTR can no longer reset the chip into the ROM bootloader. Update
@@ -114,7 +113,7 @@ Host tool
    cc -O2 -Iesp-sdr-zephyr/apps/osmosdr/src esp-sdr-zephyr/apps/osmosdr/tools/esdr_usb.c \
       -lusb-1.0 -lm -o esdr_usb
    ./esdr_usb -s <serial> info
-   ./esdr_usb -s <serial> test-in        # USB throughput, both directions
+   ./esdr_usb -s <serial> test-in        # USB throughput in; test-out for out
    ./esdr_usb -s <serial> rx -f 2450e6 -r 250e3 -g 32 -b 16 -t 10 -o rx.cs16
    ./esdr_usb -s <serial> tx -f 2450e6 -r 250e3 -G 4 -T 50e3 -a 0.3 -t 10
 

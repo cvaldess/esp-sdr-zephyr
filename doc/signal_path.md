@@ -1,8 +1,6 @@
 # sdr_stream RX and TX signal path: antenna pin to/from host sample
 
-RX (antenna in -> host sample) and TX (host sample -> antenna out) for `apps/sdr_stream`. The
-two columns share one physical antenna pin and USB link (`esp_sdr_lock` makes RX/TX mutually
-exclusive); drawn as separate columns to keep each one readable.
+RX (antenna in -> host sample) and TX (host sample -> antenna out) for `apps/sdr_stream`.
 
 ![mermaid](signal_path.svg)
 
@@ -50,11 +48,11 @@ UDC dwc2 + cdc_ncm_eth0`"]
 UDP recv, decode, timestamp`"]
         T5["`**PSRAM ring buffer**
 sample queue`"]
-        T6["`**Double buffered fill**
-2 filler threads, PIE/C interp,
-stage just ahead of DAC read`"]
-        T7["`**DAC bank**
-gapless loop, DAC_TRIG`"]
+        T6["`**Bank fill**
+leader filler, PIE/C interp
+into the idle bank`"]
+        T7["`**2 DAC banks**
+loop mode, bank flip`"]
         T8["`**TX gain / force-on**
 analog output stage`"]
         T9["`**Antenna pin**
@@ -70,15 +68,15 @@ RF out`"]
   exclusive in time, with `esp_sdr_set_turnaround()` controlling the settle (and optional retune)
   delay when switching direction.
 - RX: the capture engine writes raw I/Q words directly into the selected DRAM bank; the CPU does
-  not touch samples until `esp_sdr_rx_capture()` reads that bank after the burst completes. CIC
-  decimation and frequency-fold are alternative post-capture reductions
-  (`CONFIG_ESP_SDR_RX_DECIM`), selected per burst by `rx_mode`.
-- TX double buffering: incoming VITA samples land in a PSRAM ring buffer (`esp_sdr_tx_dac.c`),
-  written by the network thread. Two filler threads, one pinned per core, each interpolate half
-  of the next block into a small staging buffer and copy it into the single DAC bank just ahead
-  of where the DAC's gapless hardware loop (`DAC_TRIG` bit 19 held) is currently reading, timed
-  by `LOOP_LEAD`/`LOOP_STEP`/`LOOP_TAIL`. An earlier two-bank ping-pong design was tried and
-  superseded by this scheme.
+  not touch samples until `esp_sdr_rx_capture_iq()` reads that bank after the burst completes,
+  or `esp_sdr_rx_capture_decimated()` / `_folded()` (`CONFIG_ESP_SDR_RX_DECIM`), selected per burst
+  by `rx_mode`.
+- TX: the network thread writes samples into a PSRAM ring (`esp_sdr_tx_dac.c`). The leading
+  filler stages each block's input in internal RAM, interpolates it (S3 vector unit, or the C
+  fallback split across both cores) into the idle one of two 64 KiB dump banks, and flips the
+  bank select at the block's sample time. The DAC loops over the selected bank (`DAC_TRIG` bit 19
+  held; `LOOP_LEAD`/`LOOP_STEP`/`LOOP_TAIL`), so output is gapless; input that arrives late plays
+  as zeros.
 - USB transport is CDC-NCM (an Ethernet-like network device over USB): both the RX VITA stream
   and the TX VITA command/data channel ride over UDP/IPv6 inside that virtual link, on different
   UDP ports.

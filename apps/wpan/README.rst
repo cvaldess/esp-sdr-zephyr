@@ -11,8 +11,7 @@ radio driver, with a ``wpan`` shell to compare radios against each other:
 
 - on the ESP32-C6, the native radio (``ieee802154_esp32``) in raw mode;
 - on the ESP32-S3, the ``esp-sdr`` software radio (``CONFIG_ESP_SDR_IEEE802154``,
-  device ``esp_sdr_154``), which has no L2: raw 802.15.4 mode would compile
-  out the network interface layer the Wi-Fi driver needs, so its frames come
+  device ``esp_sdr_154``), without the L2 (``doc/ieee802154.md``); frames come
   through ``ieee154_esp_sdr_set_rx_cb()``.
 
 Test frames are data frames (PAN ID compression, short addresses) whose
@@ -41,6 +40,7 @@ Shell
    wpan measure                  one 1 ms capture: carrier offset, power, chip phase steps (S3)
    wpan dump                     one 1 ms capture as base64 I/Q, for tools/iq_dump.py (S3)
    wpan crash                    reset cause, driver event trail, stalled CPU 0, last crash (S3)
+   wpan mem                      system heap use (with CONFIG_SYS_HEAP_RUNTIME_STATS)
    wpan bench [units] [subsample]|phy
                                  ring decimation by 4 and PHY cost on synthetic data (S3, radio off)
 
@@ -63,11 +63,10 @@ the other apps (see ``apps/osmosdr/README.rst``):
 .. code-block:: console
 
    west build --sysbuild -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/wpan
-   west dfu -s <usb serial>
+   west flash                    # first install; later: west dfu -s <usb serial>
 
-The S3 build uses the gapless ring receive (three dump banks): its DRAM image
-must end below 0x3fcb0000, so its thread stacks and tables live in
-``ESP_SDR_HIGH_RAM``.
+The S3 build uses the gapless ring receive (three dump banks), so its thread
+stacks and tables live in ``ESP_SDR_HIGH_RAM`` (``doc/hardware-quirks.md``).
 
 Example: C6 sends, S3 receives on channel 15:
 

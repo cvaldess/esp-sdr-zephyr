@@ -46,9 +46,10 @@ pkgs.mkShell {
     black
     clang-tools
     cmake
+    dfu-util
     doxygen
     esptool
-
+    (esp-idf-xtensa.tools.openocd-esp32)
     (gnuradio.override {
       extraPackages = with gnuradioPackages; [
         osmosdr
@@ -60,21 +61,17 @@ pkgs.mkShell {
       ];
     })
     gqrx
-    soapysdr
-    soapyremote
-    libusb1
     inspectrum
+    librsvg
+    libusb1
+    mermaid-filter
     ninja
+    pandoc
+    soapyremote
+    soapysdr
     sphinx
     tcpdump
-    zephyr-sdk
-    dfu-util
-
-    pandoc
-    mermaid-filter
-    librsvg
     texliveBasic
-    (esp-idf-xtensa.tools.openocd-esp32)
     (zephyr-nix.pythonEnv.override {
       extraPackages = ps: with ps; [
         jsonschema
@@ -82,6 +79,7 @@ pkgs.mkShell {
         myst-parser
       ];
     })
+    zephyr-sdk
   ];
 
   ZEPHYR_TOOLCHAIN_VARIANT = "zephyr";

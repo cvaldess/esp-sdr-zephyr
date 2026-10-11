@@ -36,6 +36,7 @@ The API reference of the library is generated with Doxygen:
    undocumented-registers
    signal_path
    ieee802154
+   ieee802154-ack
    testing
    multiapp
    zigbit-reference

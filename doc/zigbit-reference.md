@@ -41,7 +41,7 @@ Not yet checked (needs the schematic or the ZigBit module datasheet): whether J2
 
 ## Wiring to a XIAO ESP32S3
 
-The XIAO's console and shell are on its USB-Serial-JTAG, so `uart0` (GPIO43/44) is free; `spi2` is on GPIO7 to 9.
+`wpan` on the S3 has its shell on USB (CDC-ACM), so `uart0` (GPIO43/44) is free; `spi2` is on GPIO7 to 9.
 
 | J100 pin | Signal | XIAO ESP32S3 |
 | --- | --- | --- |
@@ -100,7 +100,7 @@ Framing on the UART: HDLC-style flags and escapes with a CRC-16, 1 Mbaud to star
 
 | API | RCP |
 | --- | --- |
-| `get_capabilities` | `ENERGY_SCAN`, `FCS`, `PROMISC`, `FILTER`, `CSMA_CA`, `TX_RX_ACK`, `RX_TX_ACK`, `RETRANSMISSION`, `2_4_GHZ` |
+| `get_capabilities` | `ENERGY_SCAN`, `FCS`, `PROMISC`, `FILTER`, `CSMA`, `TX_RX_ACK`, `RX_TX_ACK`, `RETRANSMISSION` (the band comes from `attr_get`) |
 | `set_channel`, `set_txpower`, `filter` | `SET_CHANNEL`, `SET_TXPOWER`, `SET_FILTER` |
 | `start`, `stop` | `START`, `STOP` |
 | `tx` (direct, CCA, CSMA-CA) | `TX`, then wait for `TX_DONE` |

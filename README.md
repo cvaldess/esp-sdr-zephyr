@@ -19,12 +19,13 @@ like [example-application](https://github.com/zephyrproject-rtos/example-applica
 | `apps/link/` | Packet link at 80 or 40 MS/s: single carrier QAM or OFDM (RS/Hamming, CSMA/CA, iperf style test) |
 | `apps/wpan/` | `wpan` shell: 802.15.4 test frames and counters on any Zephyr radio, the software radio (S3) or a native one (C6) |
 | `apps/rfprobe/` | Bench probe: tune (plan or raw PLL), loop a tone, dump captures and analog registers; `tools/rfprobe.py` sweeps LO pairs, scans the PLL, diffs registers |
+| `apps/multiapp/` | One firmware that runs the other apps as loadable extensions, from files on a FAT volume a PC can update as a USB drive ([doc/multiapp.md](doc/multiapp.md)) |
 | `apps/common/` | Shared by the apps: USB with DFU, watchdogs, crash records, thread pinning |
 | `tests/unit/` | Unit tests on the host (ztest, `native_sim`): `scripts/run-unit-tests.sh`; the 802.15.4 PHY and driver error rate tables: `scripts/unit-tables.sh`; all test tiers and CI (`.github/workflows/build.yml`) in [doc/testing.md](doc/testing.md) |
 | `tests/integration/` | ztest on one real board: the radio API's contract |
-| `tests/regression/` | pytest on two real boards: 802.15.4 frames between the C6 and the S3 software radio |
+| `tests/regression/` | pytest on two real boards: 802.15.4 frames between the C6 and the S3 software radio, LO tuning |
 | `doc/` | Guides (Markdown) and the documentation build: Doxygen API reference of `include/`, Sphinx site, see [Documentation](#documentation) |
-| `scripts/west_commands/dfu.py` | `west dfu`: DFU update, health check and confirm of a running board |
+| `scripts/west_commands/dfu.py` | `west dfu`: DFU update, health check and confirm of a running board; `--storage` writes multiapp's volume, `--esptool` flashes over the USB-Serial-JTAG without the boot button |
 | `zephyr/module.yml` | Module definition and the `librftest.a` blob |
 | `west.yml` | The workspace: Zephyr, hal_espressif, libvrt, upstream esp-sdr, esp-dsp |
 
@@ -36,14 +37,22 @@ cd esp-sdr-ws
 west update
 west blobs fetch hal_espressif
 west blobs fetch esp-sdr-zephyr
-west build --sysbuild -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/osmosdr
-west flash
+west build -d build --sysbuild -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/multiapp
+west flash -d build
+west dfu --storage -d build
 ```
 
-See [apps/osmosdr/README.rst](apps/osmosdr/README.rst) for the host
-setup, DFU updates and the tools, and
+This puts multiapp on a XIAO ESP32S3: one image with every S3 app, loaded
+from files on a FAT volume (`west dfu --storage` writes them). On its USB
+shell, `app list` shows the apps and `app run <name>` starts one, for example
+`app run osmosdr` for GNU Radio. See
+[apps/multiapp/README.rst](apps/multiapp/README.rst) for the shell, updates
+and the drive, the apps' own READMEs for their host tools, and
 [doc/hardware-quirks.md](doc/hardware-quirks.md) for the radio, engine, memory
 layout and toolchain peculiarities and how the code handles them.
+
+Each app also builds on its own, for example `esp-sdr-zephyr/apps/osmosdr` in
+place of `esp-sdr-zephyr/apps/multiapp` (and no `west dfu --storage`).
 
 ## The library
 
@@ -52,7 +61,7 @@ layout and toolchain peculiarities and how the code handles them.
   into SRAM block 2 (0x40840000), analog filter and fixed gain; no transmit
   (its RF test library has no DAC playback), no ring and no 40 or 16 MS/s
   rates; the CIC decimated and folded captures work at 80 MS/s. Of the
-  apps, `capture` and `wpan` (native radio) run on it; the others
+  apps, `capture`, `rfprobe` and `wpan` (native radio) run on it; the others
   need the S3's USB OTG port, PSRAM or transmit.
 - Tuning: the API takes 100 to 6000 MHz, but the PLL only locks over a range
   that differs from chip to chip. Below 2210 MHz the LO goes through the 5/6
@@ -119,13 +128,15 @@ in its `doxygen/` folder. Both treat warnings as errors in CI
 
 ## Dependencies
 
-`west.yml` pins forks where this work needs changes not yet upstream:
+`west.yml` pins:
 
-- [Zephyr `esp-sdr`](https://github.com/cyber-murmel/zephyr/tree/esp-sdr): ESP32-S3 SMP (zephyrproject-rtos/zephyr#120082,
-  rebased) and CDC-NCM NTB aggregation.
+- [Zephyr `esp-sdr-multiapp`](https://github.com/cyber-murmel/zephyr/tree/esp-sdr-multiapp): ESP32-S3 SMP
+  (zephyrproject-rtos/zephyr#120082, rebased), CDC-NCM NTB aggregation, and the llext and Xtensa
+  changes `apps/multiapp` needs ([doc/multiapp.md](doc/multiapp.md), "Zephyr changes").
 - [hal_espressif `esp-sdr`](https://github.com/cyber-murmel/hal_espressif/tree/esp-sdr): the HAL side of the SMP port.
 - [libvrt `esp-sdr`](https://github.com/cyber-murmel/libvrt/tree/esp-sdr): VITA 49.2 support and a Zephyr module.
 - [esp-sdr (upstream, unmodified)](https://github.com/ESPARGOS/esp-sdr): the receiver helper headers.
+- [esp-dsp (Espressif)](https://github.com/espressif/esp-dsp): the S3 FFT kernel for `apps/link` OFDM.
 
 ## License
 
