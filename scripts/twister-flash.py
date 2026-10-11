@@ -6,8 +6,8 @@ Twister calls it as `twister-flash.py --build-dir <dir> [--board-id <id>]` for e
 board it flashes, with the build directory and the id of that board's hardware map entry.
 
 - A sysbuild image with MCUboot (the S3 apps) goes on with `west dfu`, the id being the
-  board's USB serial number. esptool cannot reset such a board into the ROM bootloader:
-  the app owns the USB OTG port.
+  board's USB serial number (esptool cannot reset such a board into the ROM bootloader:
+  the app owns the USB OTG port); multiapp's FAT volume follows with `west dfu --storage`.
 - Anything else is flashed with `west flash`. The id is the serial number of the board's
   USB-Serial-JTAG (as in /dev/serial/by-id) or a /dev path.
 
@@ -36,6 +36,12 @@ def signed_image(build_dir):
     m = re.search(r"^default:\s*(\S+)", domains.read_text(), re.M)
     image = build_dir / m.group(1) / "zephyr" / "zephyr.signed.bin" if m else None
     return image if image and image.exists() else None
+
+
+def fat_volume(build_dir):
+    """multiapp's FAT volume image in a sysbuild build directory, or None."""
+    images = list(build_dir.glob("*/multiapp_fat.img"))
+    return images[0] if images else None
 
 
 def esp_port(board_id):
@@ -75,6 +81,10 @@ def main():
 
     print("+", " ".join(cmd), flush=True)
     ret = subprocess.run(cmd).returncode
+    if ret == 0 and signed_image(args.build_dir) and fat_volume(args.build_dir):
+        cmd = ["west", "dfu", "--storage", "-d", str(args.build_dir), "-s", args.board_id]
+        print("+", " ".join(cmd), flush=True)
+        ret = subprocess.run(cmd).returncode
     if ret == 0 and args.board_id and not args.board_id.startswith("/"):
         link_port(args.board_id)
     sys.exit(ret)

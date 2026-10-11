@@ -94,6 +94,13 @@ class Dfu(WestCommand):
                        help="seconds the new image must keep its shell alive before confirm")
         p.add_argument("--no-confirm", action="store_true",
                        help="leave the image on trial (reverted at the next reset)")
+        p.add_argument("--storage", nargs="?", const="", metavar="IMAGE",
+                       help="download the multiapp FAT volume (the build's "
+                            "multiapp_fat.img, or IMAGE) instead of the firmware")
+        p.add_argument("--esptool", action="store_true",
+                       help="write MCUboot and the image (and with --storage the FAT "
+                            "volume) with esptool over the USB-Serial-JTAG, which the "
+                            "running app hands over (its usj command): no button, no DFU")
         p.add_argument("--dfu-board", action="store_true",
                        help="if --serial is not on USB, update the one board found in DFU "
                             "mode (one an earlier try left there; it has no serial to check)")
@@ -113,6 +120,75 @@ class Dfu(WestCommand):
             if m and (b / m.group(1) / "zephyr" / "zephyr.signed.bin").exists():
                 return b / m.group(1) / "zephyr" / "zephyr.signed.bin"
         self.die(f"no zephyr.signed.bin in {b} (sysbuild with MCUboot?)")
+
+    def find_storage(self, args):
+        if args.storage:
+            if not Path(args.storage).is_file():
+                self.die(f"{args.storage}: no such image")
+            return Path(args.storage)
+        b = Path(args.build_dir)
+        for cand in (b / "multiapp_fat.img", b / "multiapp" / "multiapp_fat.img"):
+            if cand.exists():
+                return cand
+        self.die(f"no multiapp_fat.img in {b} (a multiapp build?)")
+
+    def slot1_last_sector(self, args):
+        """Offset of the update slot's last sector, from the build's devicetree."""
+        dts = None
+        b = Path(args.build_dir)
+        for cand in b.glob("*/zephyr/zephyr.dts"):
+            if "mcuboot" not in str(cand):
+                dts = cand
+        if dts is None:
+            dts = b / "zephyr" / "zephyr.dts"
+        m = re.search(r"slot1_partition: partition@[0-9a-f]+ \{.*?reg = < (0x[0-9a-f]+) (0x[0-9a-f]+) >",
+                      dts.read_text(), re.S)
+        if not m:
+            self.die(f"{dts}: no slot1_partition")
+        return int(m.group(1), 16) + int(m.group(2), 16) - 4096
+
+    def esptool_flash(self, args, sn):
+        """Everything in one esptool run: its reset at the end starts the app, which takes the
+        USB port back."""
+        b = Path(args.build_dir)
+        mcuboot = b / "mcuboot" / "zephyr" / "zephyr.bin"
+        if not mcuboot.exists():
+            self.die(f"no {mcuboot}: --esptool needs a sysbuild with MCUboot")
+        parts = [("0x0", mcuboot), ("0x20000", self.find_image(args))]
+        if args.storage is not None:
+            parts.append(("0x400000", self.find_storage(args)))
+        # A stale update request in the update slot would make MCUboot swap the new image out.
+        blank = b / "slot1_trailer_blank.bin"
+        blank.write_bytes(b"\xff" * 4096)
+        parts.append((hex(self.slot1_last_sector(args)), blank))
+
+        mac = ":".join(sn[i:i + 2] for i in range(0, len(sn), 2))
+        usj = f"/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_{mac}-if00"
+        if not os.path.exists(usj):
+            try:
+                sh = Shell(shell_tty(sn))
+                sh.cmd("usj", 0.5)
+                sh.close()
+            except Exception:  # the port goes away while usj answers, as it should
+                pass
+            if not self.wait_for(lambda: os.path.exists(usj), 15):
+                self.die(f"{sn}: no USB-Serial-JTAG ({usj}) after usj")
+        argv = ["esptool", "--port", usj, "--before", "default-reset", "--after", "hard-reset",
+                "write-flash", "-u", "--flash-mode", "dio", "--flash-freq", "80m",
+                "--flash-size", "8MB"]
+        for off, path in parts:
+            argv += [off, str(path)]
+            self.inf(f"{sn}: {off} {path}")
+        r = subprocess.run(argv, capture_output=True, text=True)
+        if r.returncode != 0:
+            self.die(f"{sn}: esptool failed:\n{(r.stdout + r.stderr).strip()[-600:]}")
+        if not self.wait_for(lambda: shell_tty(sn) is not None, 60):
+            self.die(f"{sn}: did not come back after esptool")
+        time.sleep(1.0)
+        sh = Shell(shell_tty(sn))
+        out = sh.cmd("app list") if args.storage is not None else sh.cmd("kernel version")
+        sh.close()
+        self.inf(f"{sn}: written with esptool\n{out.strip()}")
 
     def find_board(self, args):
         boards = usb_boards()
@@ -153,13 +229,13 @@ class Dfu(WestCommand):
             self.wrn(f"dfu-util {' '.join(argv)}: no result after {timeout} s")
             return None
 
-    def download(self, sn, port, image):
+    def download(self, sn, port, image, alt="slot1_image"):
         if port_pid(port) != PID_DFU:
             self.dfu_util(["-S", sn, "-d", f"{VID}:{port_pid(port) or PID_APP}", "-e"], 15)
         if not self.wait_for(lambda: port_pid(port) == PID_DFU, 15):
             self.wrn(f"{sn}: no DFU mode")
             return False
-        r = self.dfu_util(["-d", f"{VID}:{PID_DFU}", "-p", port, "-a", "slot1_image", "-D",
+        r = self.dfu_util(["-d", f"{VID}:{PID_DFU}", "-p", port, "-a", alt, "-D",
                            str(image)], 120)
         if r is None:
             return False
@@ -169,12 +245,17 @@ class Dfu(WestCommand):
         return True
 
     def do_run(self, args, unknown):
-        image = self.find_image(args)
+        if args.esptool:
+            sn, _ = self.find_board(args)
+            self.esptool_flash(args, sn)
+            return
+        storage = args.storage is not None
+        image = self.find_storage(args) if storage else self.find_image(args)
         sn, port = self.find_board(args)
         self.inf(f"{sn} ({port}): {image} ({image.stat().st_size} bytes)")
 
         for attempt in range(1, args.tries + 1):
-            if not self.download(sn, port, image):
+            if not self.download(sn, port, image, "fat" if storage else "slot1_image"):
                 continue
             self.inf(f"{sn}: downloaded (try {attempt}), waiting for the swap")
             # Leave USB first: the old image's shell link can outlive the download.
@@ -189,6 +270,15 @@ class Dfu(WestCommand):
             self.die(f"{sn}: update failed")
 
         time.sleep(1.0)
+        if storage:
+            try:
+                sh = Shell(shell_tty(sn))
+                out = sh.cmd("app list")
+                sh.close()
+            except Exception as e:  # serial.SerialException, or the link went away
+                self.die(f"{sn}: no shell after the volume download ({e})")
+            self.inf(f"{sn}: volume written\n{out.strip()}")
+            return
         try:
             sh = Shell(shell_tty(sn))
             state = sh.cmd("mcuboot")
