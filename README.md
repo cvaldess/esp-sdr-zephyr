@@ -54,9 +54,9 @@ layout and toolchain peculiarities and how the code handles them.
 Each app also builds on its own, for example `esp-sdr-zephyr/apps/osmosdr` in
 place of `esp-sdr-zephyr/apps/multiapp` (and no `west dfu --storage`).
 
-Without building: each release has this multiapp as one image,
-`esptool --chip esp32s3 write-flash 0x0 esp-sdr-multiapp-<tag>-xiao_esp32s3.bin`
-with the board in download mode (BOOT held while plugging it in).
+Without building: each release has this multiapp as one image for esptool,
+and the SoapySDR module through which gqrx and GNU Radio use osmosdr; the
+release notes show the steps from flashing to gqrx.
 
 ## The library
 

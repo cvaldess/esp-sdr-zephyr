@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # A version tag (v<major>.<minor>.<patch>, as in VERSION) gets a GitHub release with one
-# esptool image for the XIAO ESP32-S3: MCUboot, multiapp and the FAT volume with every
-# app's file, merged at their flash offsets.
+# esptool image for the XIAO ESP32-S3 (MCUboot, multiapp and the FAT volume with every
+# app's file, merged at their flash offsets) and the SoapySDR module for osmosdr, notes
+# from release-notes.md.
 
 name: Release
 
@@ -30,6 +31,18 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME, but VERSION says $v"
             exit 1
           fi
+
+      - name: Build the SoapySDR module
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsoapysdr-dev libusb-1.0-0-dev
+          cmake -S esp-sdr-zephyr/apps/osmosdr/soapy -B build-soapy -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-soapy
+          plugin=libEsdrSupport-$GITHUB_REF_NAME-ubuntu24.04-x86_64.so
+          cp build-soapy/libEsdrSupport.so $plugin
+          abi=$(sed -n 's/^#define SOAPY_SDR_ABI_VERSION "\(.*\)"/\1/p' /usr/include/SoapySDR/Version.h)
+          echo "PLUGIN=$plugin" >> "$GITHUB_ENV"
+          echo "SOAPY_ABI=$abi" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -67,14 +80,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat > notes.md <<EOF
-          \`$IMAGE\`: multiapp for the Seeed XIAO ESP32S3 (8 MB flash), with MCUboot and every
-          app on its FAT volume. With the board in download mode (hold BOOT while plugging it in,
-          or run \`usj\` on the shell of a running esp-sdr app):
-
-              esptool --chip esp32s3 write-flash 0x0 $IMAGE
-
-          Then \`app list\` and \`app run <name>\` on its USB shell (apps/multiapp/README.rst).
-          EOF
-          gh release create "$GITHUB_REF_NAME" "$IMAGE" --repo "$GITHUB_REPOSITORY" \
+          sed -e "s/@IMAGE@/$IMAGE/g" -e "s/@PLUGIN@/$PLUGIN/g" -e "s/@ABI@/$SOAPY_ABI/g" \
+            esp-sdr-zephyr/.github/release-notes.md > notes.md
+          gh release create "$GITHUB_REF_NAME" "$IMAGE" "$PLUGIN" --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes --verify-tag

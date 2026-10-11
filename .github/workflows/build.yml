@@ -82,3 +82,20 @@ jobs:
             twister-out/twister.xml
             twister-out/twister_report.xml
           if-no-files-found: ignore
+
+  # The host side of apps/osmosdr, as the release builds it.
+  soapy:
+    name: SoapySDR module
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsoapysdr-dev libusb-1.0-0-dev
+          cmake -S apps/osmosdr/soapy -B build-soapy -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-soapy
