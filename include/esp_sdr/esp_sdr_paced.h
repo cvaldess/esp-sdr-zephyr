@@ -4,9 +4,8 @@
 
 /**
  * @file
- * @brief ESP-SDR CPU-paced streaming (ESP32-C6, receive also on the
- * ESP32-C5): continuous receive and transmit, one sample at a time from the
- * caller's loop.
+ * @brief ESP-SDR CPU-paced streaming (ESP32-C6, ESP32-C5): continuous
+ * receive and transmit, one sample at a time from the caller's loop.
  *
  * The C6 has no dump path that runs gapless at a low rate and no DAC buffer
  * the CPU can refill while it plays, so the CPU paces both directions:
@@ -113,7 +112,7 @@ void esp_sdr_tx_paced_stop(void);
 /** @brief Highest power step: 2 dB per step. */
 unsigned int esp_sdr_tx_paced_power_max(void);
 
-/** @brief Transmit range in MHz: the vendor tone path tunes Wi-Fi channels. */
+/** @brief Transmit range in MHz: what the vendor tone path tunes (C6 2.4 GHz, C5 also 5 GHz). */
 void esp_sdr_tx_paced_range(uint32_t *min_mhz, uint32_t *max_mhz);
 
 /** @brief The CPU cycle counter the paced streams run on. */

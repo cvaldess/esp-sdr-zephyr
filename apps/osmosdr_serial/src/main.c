@@ -30,9 +30,14 @@
 #define RATE_COUNT 5U
 /*
  * Transmit DAC rate limit: the interpolating poll plus reading the samples
- * from USB keep up with 250 kS/s at the DAC (125 kS/s x 2), not 500.
+ * from USB keep up with 250 kS/s at the DAC on the C6 (125 kS/s x 2), 500
+ * on the C5's faster CPU (125 kS/s x 4).
  */
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+#define TX_DAC_MAX_HZ 500000U
+#else
 #define TX_DAC_MAX_HZ 250000U
+#endif
 #define OUT_BLOCKS 3U
 #define TX_RING_BYTES 16384U
 /* Cycles one FIFO byte access takes, and the margin left before a sample is due. */
@@ -562,7 +567,10 @@ static void run_tx(void)
 	struct esp_sdr_paced_stats ps;
 	unsigned int key;
 
-	while (l > 1U && (want.rate_hz * l > TX_DAC_MAX_HZ || CPU_HZ % (want.rate_hz * l) != 0U)) {
+	/* The top rate leaves no time to interpolate: it goes to the DAC as it is. */
+	uint32_t dac_max = want.rate_hz >= RATE_MAX_HZ ? RATE_MAX_HZ : TX_DAC_MAX_HZ;
+
+	while (l > 1U && (want.rate_hz * l > dac_max || CPU_HZ % (want.rate_hz * l) != 0U)) {
 		l /= 2U;
 	}
 	if (esp_sdr_tx_paced_start(want.rate_hz, l, want.tx_gain, tx_input, NULL) != 0) {

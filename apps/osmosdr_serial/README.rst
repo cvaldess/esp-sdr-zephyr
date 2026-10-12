@@ -7,7 +7,7 @@ Overview
 ********
 
 The :ref:`osmosdr <esp_sdr_osmosdr>` protocol (``../osmosdr/src/esdr_proto.h``) for the
-ESP32-C6 and the ESP32-C5 (receive only), whose only USB port is USB-Serial-JTAG: the vendor
+ESP32-C6 and the ESP32-C5, whose only USB port is USB-Serial-JTAG: the vendor
 requests travel as frames on the byte stream, receive blocks and transmit samples in between
 (the serial transport in ``esdr_proto.h``). The app drives the port's FIFOs itself; the console
 is on UART0 (D6 TX, D7 RX on the XIAO). One direction at a time, as on the S3.
@@ -19,14 +19,15 @@ is on UART0 (D6 TX, D7 RX on the XIAO). One direction at a time, as on the S3.
   the centre.
 - **Transmit**: the host's samples go to the TX DC value register, which drives the DAC once
   the vendor tone path has turned the transmit chain on (``esp_sdr_tx_paced_*()``), through an
-  8-tap-per-phase FIR at up to 250 kS/s at the DAC (125 kS/s x 2). 2400 to 2500 MHz, power
-  steps 0 to 15 (2 dB each).
+  8-tap-per-phase FIR; 250 kS/s goes to the DAC as it is. The DAC runs at up to 250 kS/s on
+  the C6 (125 kS/s x 2) and 500 kS/s on the C5 (125 kS/s x 4). C6 2400 to 2500 MHz, C5 2400 to
+  5900 MHz (whole MHz); power steps 0 to 15 (2 dB each).
 - The CPU paces both with interrupts locked and serves USB between samples, never so late
   that a sample instant moves.
 
 USB-Serial-JTAG carries about 500 kB/s each way: 250 kS/s receive fits as 8-bit items only,
-16 bit up to 125 kS/s. Transmit is reliable up to 125 kS/s; at 250 kS/s the link drops about
-10 % of the input, played as zeros.
+16 bit up to 125 kS/s. Transmit at 250 kS/s keeps up on the C5; on the C6 about 10 % of the
+input arrives late and plays as zeros, so 125 kS/s is its reliable rate.
 
 Building and flashing
 *********************
@@ -38,8 +39,7 @@ Building and flashing
    west flash --esp-device /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_<mac>-if00
 
 The board configs select the U.FL connector. The C5 has the same IQ estimator (0x24 lower) and
-receives the same way; its transmit path is not mapped yet (``SET_MODE`` transmit fails, info
-reports transmit gain 0). Opening the port does not reset the board as long as the host leaves
+its TX DC value register at 0x600a0c08, where bit 26 enables the injection. Opening the port does not reset the board as long as the host leaves
 DTR and RTS alone (the host tool and the SoapySDR module open it raw); tools that toggle them
 (esptool, terminal programs) reset it.
 

@@ -128,6 +128,7 @@
 /* TX DC value: I 9:0, Q 19:10, drives the DAC once ram_stop_tx_tone() selected the data path. */
 #define TXDC_REG         0x600a0444U
 #define TXDC_IQ          GENMASK(19, 0)
+#define TXDC_INJECT      0U
 
 #elif defined(CONFIG_SOC_SERIES_ESP32C5)
 #include <soc/hp_system_reg.h>
@@ -192,6 +193,14 @@
 #define IQE_SUM_I_REG    0x600a0464U
 #define IQE_SUM_Q_REG    0x600a0468U
 #define IQE_COUNT_MAX    32768U
+/*
+ * TX DC value as upstream's first C5 transmit used it (git show
+ * e605684:main/c5_main.c, emit_iq()): I 9:0, Q 19:10, bit 26 enables the
+ * injection, bit 25 is the band's I/Q swap (kept).
+ */
+#define TXDC_REG         0x600a0c08U
+#define TXDC_IQ          GENMASK(19, 0)
+#define TXDC_INJECT      BIT(26)
 
 #else
 #error "esp_sdr: unsupported SoC"

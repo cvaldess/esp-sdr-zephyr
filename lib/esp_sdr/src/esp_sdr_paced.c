@@ -30,15 +30,10 @@ LOG_MODULE_DECLARE(esp_sdr, CONFIG_ESP_SDR_LOG_LEVEL);
 /* librftest: tone backoff in quarter dB; the tone path also turns the TX chain on. */
 #define TX_BACKOFF_STEP 8U
 
-#if defined(CONFIG_SOC_SERIES_ESP32C6)
 extern void esp_phy_wifi_tx_tone(uint32_t start, uint32_t chan, uint32_t backoff);
-#endif
 
 static struct esp_sdr_paced_stats stats;
-static bool rx_on;
-#if defined(CONFIG_SOC_SERIES_ESP32C6)
-static bool tx_on;
-#endif
+static bool rx_on, tx_on;
 
 static inline uint32_t cycles(void)
 {
@@ -157,9 +152,8 @@ void esp_sdr_rx_paced_stop(void)
 	k_mutex_unlock(&esp_sdr_lock);
 }
 
-#if defined(CONFIG_SOC_SERIES_ESP32C6)
 static struct {
-	uint32_t step, target, ph, l, pos, upper, next;
+	uint32_t step, target, ph, l, pos, upper, next, orig;
 	esp_sdr_tx_paced_input_t input;
 	void *user;
 	uint32_t power, mhz;
@@ -196,8 +190,14 @@ unsigned int esp_sdr_tx_paced_power_max(void)
 
 void esp_sdr_tx_paced_range(uint32_t *min_mhz, uint32_t *max_mhz)
 {
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+	/* The C5's tone path takes any MHz, 2.4 and 5 GHz. */
+	*min_mhz = 2400U;
+	*max_mhz = 5900U;
+#else
 	*min_mhz = 2400U;
 	*max_mhz = 2500U;
+#endif
 }
 
 int esp_sdr_tx_paced_start(uint32_t rate_hz, unsigned int interp, unsigned int power,
@@ -228,8 +228,15 @@ int esp_sdr_tx_paced_start(uint32_t rate_hz, unsigned int interp, unsigned int p
 	txp.mhz = esp_sdr_freq_mhz;
 	txp.power = power;
 	esp_phy_wifi_tx_tone(1, txp.mhz, (TX_POWER_MAX - power) * TX_BACKOFF_STEP);
-	ram_stop_tx_tone(1);
+	phy_stop_tx_tone(1);
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+	/* The tone path tuned the exact MHz; the kHz offset as esp_sdr_tune() applies it. */
+	if (esp_sdr_fofs_khz != 0) {
+		phy_set_rf_freq_offset(phy_param[PHY_PARAM_XTAL], txp.mhz, esp_sdr_fofs_khz);
+	}
+#else
 	phy_set_freq(txp.mhz, esp_sdr_fofs_khz);
+#endif
 	cycles_enable();
 	memset(&stats, 0, sizeof(stats));
 	fir_design(interp);
@@ -240,7 +247,8 @@ int esp_sdr_tx_paced_start(uint32_t rate_hz, unsigned int interp, unsigned int p
 	txp.pos = 0;
 	txp.input = input;
 	txp.user = user;
-	txp.upper = sys_read32(TXDC_REG) & ~TXDC_IQ;
+	txp.orig = sys_read32(TXDC_REG);
+	txp.upper = (txp.orig & ~TXDC_IQ) | TXDC_INJECT;
 	txp.next = txp.upper;
 	txp.step = CPU_HZ / (rate_hz * interp);
 	txp.target = cycles() + txp.step;
@@ -309,70 +317,27 @@ void esp_sdr_tx_paced_stop(void)
 	if (!tx_on) {
 		return;
 	}
-	sys_write32(txp.upper, TXDC_REG);
+	sys_write32(txp.orig, TXDC_REG);
 	esp_phy_wifi_tx_tone(0, txp.mhz, (TX_POWER_MAX - txp.power) * TX_BACKOFF_STEP);
 	tx_on = false;
 	/* Back to receive at the frequency in use. */
 	(void)esp_sdr_retune();
 	k_mutex_unlock(&esp_sdr_lock);
 }
-#else
-/* Transmit through the TX DC value register is mapped on the C6 only. */
-unsigned int esp_sdr_tx_paced_power_max(void)
-{
-	return 0;
-}
-
-void esp_sdr_tx_paced_range(uint32_t *min_mhz, uint32_t *max_mhz)
-{
-	*min_mhz = 0;
-	*max_mhz = 0;
-}
-
-int esp_sdr_tx_paced_start(uint32_t rate_hz, unsigned int interp, unsigned int power,
-			   esp_sdr_tx_paced_input_t input, void *user)
-{
-	ARG_UNUSED(rate_hz);
-	ARG_UNUSED(interp);
-	ARG_UNUSED(power);
-	ARG_UNUSED(input);
-	ARG_UNUSED(user);
-	return -ENOTSUP;
-}
-
-bool esp_sdr_tx_paced_poll(void)
-{
-	return false;
-}
-
-uint32_t esp_sdr_tx_paced_slack(void)
-{
-	return 0;
-}
-
-void esp_sdr_tx_paced_stop(void)
-{
-}
-#endif
-
 void esp_sdr_paced_sync(void)
 {
-#if defined(CONFIG_SOC_SERIES_ESP32C6)
 	if (tx_on) {
 		txp.target = cycles() + txp.step;
 		return;
 	}
-#endif
 	rxp.target = cycles() + rxp.step;
 }
 
 uint32_t esp_sdr_paced_deadline(void)
 {
-#if defined(CONFIG_SOC_SERIES_ESP32C6)
 	if (tx_on) {
 		return txp.target;
 	}
-#endif
 	return rxp.target;
 }
 
