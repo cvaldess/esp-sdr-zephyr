@@ -1,10 +1,12 @@
 /*
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * SoapySDR module for the osmosdr app's USB protocol (esdr_proto.h), so GNU
- * Radio (gr-soapy), gqrx and SoapySDRUtil can use the board directly. Finds
- * and opens the device over libusb, same vendor requests and bulk blocks as
- * tools/esdr_usb.c. Half duplex: activating one direction stops the other.
+ * SoapySDR module for the osmosdr app's protocol (esdr_proto.h), so GNU
+ * Radio (gr-soapy), gqrx and SoapySDRUtil can use the board directly. Two
+ * links: USB (the osmosdr app, found over libusb: vendor requests and bulk
+ * blocks as tools/esdr_usb.c) and serial (the osmosdr_serial app, selected
+ * with port=/dev/...: the same requests as frames on a byte stream). Half
+ * duplex: activating one direction stops the other.
  *
  * Build (CMakeLists.txt next to this file):
  *   cmake -B build && cmake --build build
@@ -20,11 +22,18 @@
 
 #include <libusb.h>
 
+#include <fcntl.h>
+#include <poll.h>
+#include <termios.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cmath>
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -106,39 +115,6 @@ bool openByCriteria(libusb_context *ctx, const std::string &wantSerial, UsbEsdr 
 	return found;
 }
 
-int ctrlOut(libusb_device_handle *h, uint8_t req, uint16_t value, const void *data, uint16_t len)
-{
-	return libusb_control_transfer(h,
-					LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
-						LIBUSB_RECIPIENT_DEVICE,
-					req, value, 0, (unsigned char *)data, len, 1000);
-}
-
-int ctrlIn(libusb_device_handle *h, uint8_t req, void *data, uint16_t len)
-{
-	return libusb_control_transfer(h,
-					LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR |
-						LIBUSB_RECIPIENT_DEVICE,
-					req, 0, 0, (unsigned char *)data, len, 1000);
-}
-
-int setU32(libusb_device_handle *h, uint8_t req, uint32_t v)
-{
-	uint8_t b[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
-
-	return ctrlOut(h, req, 0, b, 4);
-}
-
-int setFreq(libusb_device_handle *h, uint64_t hz)
-{
-	uint8_t b[8];
-
-	for (int i = 0; i < 8; i++) {
-		b[i] = (uint8_t)(hz >> (8 * i));
-	}
-	return ctrlOut(h, ESDR_REQ_SET_FREQ, 0, b, 8);
-}
-
 /* Receive-side ring of converted samples, written by the USB callback thread. */
 class SampleRing {
 public:
@@ -208,25 +184,395 @@ private:
 	bool overflowed_ = false;
 };
 
+/* Requests and sample transport: USB (osmosdr) or a serial byte stream (osmosdr_serial). */
+class Link {
+public:
+	using RxFn = std::function<void(const uint8_t *, size_t)>;
+
+	virtual ~Link() = default;
+	/* Data length, or negative on error. */
+	virtual int ctrlOut(uint8_t req, uint16_t value, const void *data, uint16_t len) = 0;
+	virtual int ctrlIn(uint8_t req, void *data, uint16_t len) = 0;
+	/* Transmit bytes: how many were taken (0 on timeout), or negative on error. */
+	virtual int writeSamples(const uint8_t *p, size_t n, long timeoutUs) = 0;
+	/* Receive: the stream's bytes go to fn (in order, any split) until stopRx(). */
+	virtual void startRx(RxFn fn) = 0;
+	virtual void stopRx() = 0;
+	virtual std::string serial() const = 0;
+};
+
+class UsbLink : public Link {
+public:
+	explicit UsbLink(const std::string &serial)
+	{
+		if (libusb_init(&ctx_) != 0) {
+			throw std::runtime_error("esdr: libusb_init failed");
+		}
+		if (!openByCriteria(ctx_, serial, usb_)) {
+			libusb_exit(ctx_);
+			throw std::runtime_error("esdr: device not found" +
+						 (serial.empty() ? "" : " (serial " + serial + ")"));
+		}
+	}
+
+	~UsbLink() override
+	{
+		stopRx();
+		libusb_release_interface(usb_.h, 0);
+		libusb_close(usb_.h);
+		libusb_exit(ctx_);
+	}
+
+	int ctrlOut(uint8_t req, uint16_t value, const void *data, uint16_t len) override
+	{
+		return libusb_control_transfer(usb_.h,
+					       LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
+						       LIBUSB_RECIPIENT_DEVICE,
+					       req, value, 0, (unsigned char *)data, len, 1000);
+	}
+
+	int ctrlIn(uint8_t req, void *data, uint16_t len) override
+	{
+		return libusb_control_transfer(usb_.h,
+					       LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR |
+						       LIBUSB_RECIPIENT_DEVICE,
+					       req, 0, 0, (unsigned char *)data, len, 1000);
+	}
+
+	/* Blocking bulk OUT: the device holds the transfer back while its backlog is full. */
+	int writeSamples(const uint8_t *p, size_t n, long timeoutUs) override
+	{
+		int done = 0;
+		int r = libusb_bulk_transfer(usb_.h, usb_.ep_out, const_cast<uint8_t *>(p), (int)n,
+					     &done, (unsigned int)std::max(1L, timeoutUs / 1000));
+
+		if (r != 0 && r != LIBUSB_ERROR_TIMEOUT) {
+			return -1;
+		}
+		return done;
+	}
+
+	void startRx(RxFn fn) override
+	{
+		fn_ = std::move(fn);
+		stop_ = false;
+		thread_ = std::thread(&UsbLink::rxLoop, this);
+	}
+
+	void stopRx() override
+	{
+		stop_ = true;
+		if (thread_.joinable()) {
+			thread_.join();
+		}
+	}
+
+	std::string serial() const override { return usb_.serial; }
+
+private:
+	/*
+	 * Async bulk IN into fixed buffers, resubmitted as they complete. No
+	 * timeout: queued transfers fill one after another, so a timeout counted
+	 * from submission would expire on the later ones at low rates.
+	 */
+	void rxLoop()
+	{
+		static constexpr int XFERS = 8;
+		static constexpr size_t XFER_BYTES = 16 * ESDR_BLOCK_BYTES;
+		std::vector<libusb_transfer *> xfers(XFERS);
+		std::vector<std::vector<uint8_t>> bufs(XFERS);
+
+		auto cb = [](libusb_transfer *t) {
+			auto *self = reinterpret_cast<UsbLink *>(t->user_data);
+
+			/* A cancelled transfer may still hold data: never drop what arrived. */
+			if (t->status == LIBUSB_TRANSFER_COMPLETED ||
+			    t->status == LIBUSB_TRANSFER_CANCELLED ||
+			    t->status == LIBUSB_TRANSFER_TIMED_OUT) {
+				self->fn_(t->buffer, (size_t)t->actual_length);
+			}
+			if (self->stop_ || libusb_submit_transfer(t) != 0) {
+				self->pending_--;
+			}
+		};
+		pending_ = 0;
+		for (int k = 0; k < XFERS; k++) {
+			bufs[k].resize(XFER_BYTES);
+			xfers[k] = libusb_alloc_transfer(0);
+			libusb_fill_bulk_transfer(xfers[k], usb_.h, usb_.ep_in, bufs[k].data(),
+						  (int)XFER_BYTES, cb, this, 0);
+			if (libusb_submit_transfer(xfers[k]) == 0) {
+				pending_++;
+			}
+		}
+		while (!stop_) {
+			timeval tv{0, 50000};
+
+			libusb_handle_events_timeout(ctx_, &tv);
+		}
+		for (int k = 0; k < XFERS; k++) {
+			libusb_cancel_transfer(xfers[k]);
+		}
+		/* Until every cancelled transfer has come back (at most a second). */
+		for (int tries = 0; tries < 50 && pending_ > 0; tries++) {
+			timeval tv{0, 20000};
+
+			libusb_handle_events_timeout(ctx_, &tv);
+		}
+		for (auto *x : xfers) {
+			libusb_free_transfer(x);
+		}
+	}
+
+	libusb_context *ctx_ = nullptr;
+	UsbEsdr usb_;
+	RxFn fn_;
+	std::thread thread_;
+	std::atomic<bool> stop_{true};
+	int pending_ = 0;
+};
+
+/*
+ * The serial transport: request frames and their replies, receive blocks in
+ * between (esdr_proto.h). One reader thread sorts what arrives. The port is
+ * opened raw without touching DTR/RTS: on USB-Serial-JTAG that resets the chip.
+ */
+class SerialLink : public Link {
+public:
+	explicit SerialLink(const std::string &port) : port_(port)
+	{
+		fd_ = ::open(port.c_str(), O_RDWR | O_NOCTTY);
+		if (fd_ < 0) {
+			throw std::runtime_error("esdr: cannot open " + port);
+		}
+		termios a{};
+
+		tcgetattr(fd_, &a);
+		cfmakeraw(&a);
+		a.c_cflag |= CLOCAL | CREAD;
+		a.c_cflag &= ~HUPCL;
+		a.c_cc[VMIN] = 0;
+		a.c_cc[VTIME] = 1;
+		tcsetattr(fd_, TCSANOW, &a);
+		tcflush(fd_, TCIOFLUSH);
+		/*
+		 * A previous host may have stopped inside a transmit frame: zeros
+		 * complete any payload, then the device resynchronizes on the magic.
+		 */
+		std::vector<uint8_t> zeros(sizeof(esdr_ser_hdr) + 4096, 0);
+
+		writeAll(zeros.data(), zeros.size(), 0);
+		reader_ = std::thread(&SerialLink::readLoop, this);
+	}
+
+	~SerialLink() override
+	{
+		stop_ = true;
+		if (reader_.joinable()) {
+			reader_.join();
+		}
+		::close(fd_);
+	}
+
+	int ctrlOut(uint8_t req, uint16_t value, const void *data, uint16_t len) override
+	{
+		std::vector<uint8_t> rep;
+
+		return request(req, 0, value, data, len, rep);
+	}
+
+	int ctrlIn(uint8_t req, void *data, uint16_t len) override
+	{
+		std::vector<uint8_t> rep;
+		int r = request(req, ESDR_SER_IN, 0, nullptr, len, rep);
+
+		if (r < 0) {
+			return r;
+		}
+		size_t n = std::min<size_t>(rep.size(), len);
+
+		std::memcpy(data, rep.data(), n);
+		return (int)n;
+	}
+
+	/* Frames of transmit data; the device's flow control paces the writes. */
+	int writeSamples(const uint8_t *p, size_t n, long timeoutUs) override
+	{
+		size_t done = 0;
+
+		while (done < n) {
+			uint16_t k = (uint16_t)std::min<size_t>(n - done, 4096);
+			esdr_ser_hdr h{ESDR_SER_MAGIC, ESDR_SER_TX_DATA, 0, 0, k, 0};
+			std::lock_guard<std::mutex> g(wm_);
+
+			if (!writeAll(&h, sizeof(h), timeoutUs) || !writeAll(p + done, k, timeoutUs)) {
+				return done > 0 ? (int)done : -1;
+			}
+			done += k;
+		}
+		return (int)done;
+	}
+
+	void startRx(RxFn fn) override
+	{
+		std::lock_guard<std::mutex> g(rxm_);
+		fn_ = std::move(fn);
+	}
+
+	void stopRx() override
+	{
+		std::lock_guard<std::mutex> g(rxm_);
+		fn_ = nullptr;
+	}
+
+	std::string serial() const override { return port_; }
+
+private:
+	bool writeAll(const void *p, size_t n, long timeoutUs)
+	{
+		const uint8_t *b = static_cast<const uint8_t *>(p);
+		int ms = timeoutUs > 0 ? (int)std::max(1L, timeoutUs / 1000) : 2000;
+
+		while (n > 0) {
+			pollfd pf{fd_, POLLOUT, 0};
+
+			if (poll(&pf, 1, ms) <= 0) {
+				return false;
+			}
+			ssize_t w = ::write(fd_, b, n);
+
+			if (w < 0) {
+				return false;
+			}
+			b += w;
+			n -= (size_t)w;
+		}
+		return true;
+	}
+
+	int request(uint8_t req, uint8_t flags, uint16_t value, const void *data, uint16_t len,
+		    std::vector<uint8_t> &rep)
+	{
+		std::unique_lock<std::mutex> lk(cm_);
+		esdr_ser_hdr h{ESDR_SER_MAGIC, req, flags, value, len, 0};
+
+		gotReply_ = false;
+		wantReq_ = req;
+		{
+			std::lock_guard<std::mutex> g(wm_);
+
+			if (!writeAll(&h, sizeof(h), 0) ||
+			    ((flags & ESDR_SER_IN) == 0 && len > 0 && !writeAll(data, len, 0))) {
+				return -1;
+			}
+		}
+		if (!cv_.wait_for(lk, std::chrono::seconds(3), [&] { return gotReply_; })) {
+			SoapySDR_logf(SOAPY_SDR_WARNING, "esdr: no reply to request %u", req);
+			return -1;
+		}
+		if (replyStatus_ != 0) {
+			return replyStatus_;
+		}
+		rep = reply_;
+		return (flags & ESDR_SER_IN) != 0 ? (int)rep.size() : (int)len;
+	}
+
+	/* Sort the stream into reply frames and receive blocks; skip anything else byte by byte. */
+	void readLoop()
+	{
+		std::vector<uint8_t> buf;
+		uint8_t tmp[65536];
+
+		while (!stop_) {
+			pollfd pf{fd_, POLLIN, 0};
+
+			if (poll(&pf, 1, 100) <= 0) {
+				continue;
+			}
+			ssize_t r = ::read(fd_, tmp, sizeof(tmp));
+
+			if (r <= 0) {
+				continue;
+			}
+			buf.insert(buf.end(), tmp, tmp + r);
+			size_t at = 0;
+
+			while (buf.size() - at >= 4) {
+				uint32_t magic;
+
+				std::memcpy(&magic, &buf[at], 4);
+				if (magic == ESDR_BLOCK_MAGIC) {
+					if (buf.size() - at < ESDR_BLOCK_BYTES) {
+						break;
+					}
+					{
+						std::lock_guard<std::mutex> g(rxm_);
+
+						if (fn_) {
+							fn_(&buf[at], ESDR_BLOCK_BYTES);
+						}
+					}
+					at += ESDR_BLOCK_BYTES;
+				} else if (magic == ESDR_SER_MAGIC) {
+					esdr_ser_hdr h;
+
+					if (buf.size() - at < sizeof(h)) {
+						break;
+					}
+					std::memcpy(&h, &buf[at], sizeof(h));
+					if (buf.size() - at < sizeof(h) + h.len) {
+						break;
+					}
+					{
+						std::lock_guard<std::mutex> g(cm_);
+
+						if (h.req == wantReq_) {
+							reply_.assign(&buf[at + sizeof(h)],
+								      &buf[at + sizeof(h) + h.len]);
+							replyStatus_ = h.status;
+							gotReply_ = true;
+							cv_.notify_all();
+						}
+					}
+					at += sizeof(h) + h.len;
+				} else {
+					at++;
+				}
+			}
+			buf.erase(buf.begin(), buf.begin() + (long)at);
+		}
+	}
+
+	std::string port_;
+	int fd_ = -1;
+	std::thread reader_;
+	std::atomic<bool> stop_{false};
+	/* Writes (frames stay whole), requests (one at a time), receive callback. */
+	std::mutex wm_, cm_, rxm_;
+	std::condition_variable cv_;
+	bool gotReply_ = false;
+	uint8_t wantReq_ = 0;
+	int16_t replyStatus_ = 0;
+	std::vector<uint8_t> reply_;
+	RxFn fn_;
+};
+
 } /* namespace */
 
 class SoapyEsdr : public SoapySDR::Device {
 public:
 	explicit SoapyEsdr(const SoapySDR::Kwargs &args)
 	{
-		if (libusb_init(&ctx_) != 0) {
-			throw std::runtime_error("esdr: libusb_init failed");
-		}
-		std::string serial = args.count("serial") ? args.at("serial") : "";
-
-		if (!openByCriteria(ctx_, serial, usb_)) {
-			libusb_exit(ctx_);
-			throw std::runtime_error("esdr: device not found" +
-						 (serial.empty() ? "" : " (serial " + serial + ")"));
+		if (args.count("port")) {
+			link_ = std::make_unique<SerialLink>(args.at("port"));
+			/* About 500 kB/s each way: 250 kS/s fits as 8-bit items only. */
+			narrow_ = true;
+		} else {
+			link_ = std::make_unique<UsbLink>(args.count("serial") ? args.at("serial") : "");
 		}
 		struct esdr_info info{};
 
-		if (ctrlIn(usb_.h, ESDR_REQ_GET_INFO, &info, sizeof(info)) == (int)sizeof(info) &&
+		if (link_->ctrlIn(ESDR_REQ_GET_INFO, &info, sizeof(info)) == (int)sizeof(info) &&
 		    info.magic == ESDR_INFO_MAGIC) {
 			freqMinHz_ = (double)info.freq_min_hz;
 			freqMaxHz_ = (double)info.freq_max_hz;
@@ -238,7 +584,7 @@ public:
 		/* Start from what the device runs with. */
 		struct esdr_state st{};
 
-		if (ctrlIn(usb_.h, ESDR_REQ_GET_STATE, &st, sizeof(st)) == (int)sizeof(st)) {
+		if (link_->ctrlIn(ESDR_REQ_GET_STATE, &st, sizeof(st)) == (int)sizeof(st)) {
 			freqHz_ = (double)st.freq_hz;
 			rateHz_ = (double)st.sample_rate_hz;
 			bwHz_ = (double)st.bandwidth_hz;
@@ -257,11 +603,6 @@ public:
 		if (txRunning_) {
 			stopTx();
 		}
-		if (usb_.h != nullptr) {
-			libusb_release_interface(usb_.h, 0);
-			libusb_close(usb_.h);
-		}
-		libusb_exit(ctx_);
 	}
 
 	/* ---- identification ---- */
@@ -272,7 +613,7 @@ public:
 	{
 		SoapySDR::Kwargs info;
 
-		info["serial"] = usb_.serial;
+		info["serial"] = link_->serial();
 		return info;
 	}
 
@@ -288,8 +629,8 @@ public:
 
 	std::string getNativeStreamFormat(const int, const size_t, double &fullScale) const override
 	{
-		fullScale = 32767;
-		return SOAPY_SDR_CS16;
+		fullScale = narrow_ ? 127 : 32767;
+		return narrow_ ? SOAPY_SDR_CS8 : SOAPY_SDR_CS16;
 	}
 
 	SoapySDR::Stream *setupStream(const int direction, const std::string &format,
@@ -302,14 +643,16 @@ public:
 		if (format != SOAPY_SDR_CS8 && format != SOAPY_SDR_CS16 && format != SOAPY_SDR_CF32) {
 			throw std::runtime_error("esdr: format must be CS8, CS16 or CF32");
 		}
-		/* CF32 travels as 16-bit items. */
+		/* CF32 travels as 16-bit items, or 8-bit ones on the serial link. */
+		int floatBits = narrow_ ? 8 : 16;
+
 		if (direction == SOAPY_SDR_TX) {
 			txFloat_ = format == SOAPY_SDR_CF32;
-			txBits_ = (format == SOAPY_SDR_CS8) ? 8 : 16;
+			txBits_ = format == SOAPY_SDR_CS8 ? 8 : format == SOAPY_SDR_CS16 ? 16 : floatBits;
 			return reinterpret_cast<SoapySDR::Stream *>(&txTag_);
 		}
 		float_ = format == SOAPY_SDR_CF32;
-		bits_ = (format == SOAPY_SDR_CS8) ? 8 : 16;
+		bits_ = format == SOAPY_SDR_CS8 ? 8 : format == SOAPY_SDR_CS16 ? 16 : floatBits;
 		return reinterpret_cast<SoapySDR::Stream *>(&rxTag_);
 	}
 
@@ -350,8 +693,8 @@ public:
 	}
 
 	/*
-	 * Blocking bulk OUT: the device holds the transfer back while its DAC
-	 * backlog is full, which paces the caller to the sample rate.
+	 * Blocking write: the device holds the data back while its backlog is
+	 * full, which paces the caller to the sample rate.
 	 */
 	int writeStream(SoapySDR::Stream *, const void *const *buffs, const size_t numElems,
 			int &flags, const long long, const long timeoutUs) override
@@ -383,10 +726,8 @@ public:
 		} else {
 			std::memcpy(o, buffs[0], n * item);
 		}
-		int r = libusb_bulk_transfer(usb_.h, usb_.ep_out, o, (int)(n * item), &done,
-					     (unsigned int)std::max(1L, timeoutUs / 1000));
-
-		if (r != 0 && r != LIBUSB_ERROR_TIMEOUT) {
+		done = link_->writeSamples(o, n * item, timeoutUs);
+		if (done < 0) {
 			return SOAPY_SDR_STREAM_ERROR;
 		}
 		if (done == 0) {
@@ -407,8 +748,16 @@ public:
 
 			n = ring_.pop(reinterpret_cast<uint8_t *>(conv_.data()), want, (int)timeoutUs,
 				      overflow);
-			for (size_t k = 0; k < 2 * n; k++) {
-				out[k] = (float)conv_[k] * (1.0f / 32768.0f);
+			if (bits_ == 8) {
+				const int8_t *c = reinterpret_cast<const int8_t *>(conv_.data());
+
+				for (size_t k = 0; k < 2 * n; k++) {
+					out[k] = (float)c[k] * (1.0f / 128.0f);
+				}
+			} else {
+				for (size_t k = 0; k < 2 * n; k++) {
+					out[k] = (float)conv_[k] * (1.0f / 32768.0f);
+				}
 			}
 		} else {
 			n = ring_.pop(reinterpret_cast<uint8_t *>(buffs[0]), numElems, (int)timeoutUs,
@@ -446,7 +795,7 @@ public:
 			return;
 		}
 		rxAuto_ = automatic;
-		ctrlOut(usb_.h, ESDR_REQ_SET_RX_GAIN, automatic ? ESDR_GAIN_AUTO : (uint16_t)rxGain_,
+		link_->ctrlOut(ESDR_REQ_SET_RX_GAIN, automatic ? ESDR_GAIN_AUTO : (uint16_t)rxGain_,
 			nullptr, 0);
 	}
 
@@ -465,10 +814,10 @@ public:
 		if (direction == SOAPY_SDR_RX) {
 			rxAuto_ = false;
 			rxGain_ = (int)std::max(0.0, std::min((double)rxGainMax_, value));
-			ctrlOut(usb_.h, ESDR_REQ_SET_RX_GAIN, (uint16_t)rxGain_, nullptr, 0);
+			link_->ctrlOut(ESDR_REQ_SET_RX_GAIN, (uint16_t)rxGain_, nullptr, 0);
 		} else {
 			txGain_ = (int)std::max(0.0, std::min((double)txGainMax_, value));
-			ctrlOut(usb_.h, ESDR_REQ_SET_TX_GAIN, (uint16_t)txGain_, nullptr, 0);
+			link_->ctrlOut(ESDR_REQ_SET_TX_GAIN, (uint16_t)txGain_, nullptr, 0);
 		}
 	}
 
@@ -501,13 +850,13 @@ public:
 		if (direction == SOAPY_SDR_TX) {
 			txFreqHz_ = frequency;
 			if (txRunning_) {
-				setFreq(usb_.h, (uint64_t)frequency);
+				setFreq((uint64_t)frequency);
 			}
 			return;
 		}
 		freqHz_ = frequency;
 		if (!txRunning_) {
-			setFreq(usb_.h, (uint64_t)frequency);
+			setFreq((uint64_t)frequency);
 		}
 	}
 
@@ -536,13 +885,13 @@ public:
 		if (direction == SOAPY_SDR_TX) {
 			txRateHz_ = actual;
 			if (txRunning_) {
-				setU32(usb_.h, ESDR_REQ_SET_SAMPLE_RATE, (uint32_t)actual);
+				setU32(ESDR_REQ_SET_SAMPLE_RATE, (uint32_t)actual);
 			}
 			return;
 		}
 		rateHz_ = actual;
 		if (!txRunning_) {
-			setU32(usb_.h, ESDR_REQ_SET_SAMPLE_RATE, (uint32_t)actual);
+			setU32(ESDR_REQ_SET_SAMPLE_RATE, (uint32_t)actual);
 		}
 	}
 
@@ -582,7 +931,7 @@ public:
 	void setBandwidth(const int, const size_t, const double bw) override
 	{
 		bwHz_ = bw;
-		setU32(usb_.h, ESDR_REQ_SET_BANDWIDTH, (uint32_t)bw);
+		setU32(ESDR_REQ_SET_BANDWIDTH, (uint32_t)bw);
 	}
 
 	double getBandwidth(const int, const size_t) const override { return bwHz_; }
@@ -598,12 +947,29 @@ public:
 			return;
 		}
 		corrPpm_ = value;
-		setU32(usb_.h, ESDR_REQ_SET_FREQ_CORR, (uint32_t)(int32_t)(value * 1000.0));
+		setU32(ESDR_REQ_SET_FREQ_CORR, (uint32_t)(int32_t)(value * 1000.0));
 	}
 
 	double getFrequencyCorrection(const int, const size_t) const override { return corrPpm_; }
 
 private:
+	int setU32(uint8_t req, uint32_t v)
+	{
+		uint8_t b[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
+
+		return link_->ctrlOut(req, 0, b, 4);
+	}
+
+	int setFreq(uint64_t hz)
+	{
+		uint8_t b[8];
+
+		for (int i = 0; i < 8; i++) {
+			b[i] = (uint8_t)(hz >> (8 * i));
+		}
+		return link_->ctrlOut(ESDR_REQ_SET_FREQ, 0, b, 8);
+	}
+
 	bool isTx(SoapySDR::Stream *stream) const
 	{
 		return reinterpret_cast<const char *>(stream) == &txTag_;
@@ -611,18 +977,18 @@ private:
 
 	void startTx()
 	{
-		ctrlOut(usb_.h, ESDR_REQ_SET_MODE, ESDR_MODE_OFF, nullptr, 0);
-		setFreq(usb_.h, (uint64_t)txFreqHz_);
-		setU32(usb_.h, ESDR_REQ_SET_SAMPLE_RATE, (uint32_t)txRateHz_);
-		ctrlOut(usb_.h, ESDR_REQ_SET_TX_GAIN, (uint16_t)txGain_, nullptr, 0);
-		ctrlOut(usb_.h, ESDR_REQ_SET_FORMAT, (uint16_t)txBits_, nullptr, 0);
-		ctrlOut(usb_.h, ESDR_REQ_SET_MODE, ESDR_MODE_TX, nullptr, 0);
+		link_->ctrlOut(ESDR_REQ_SET_MODE, ESDR_MODE_OFF, nullptr, 0);
+		setFreq((uint64_t)txFreqHz_);
+		setU32(ESDR_REQ_SET_SAMPLE_RATE, (uint32_t)txRateHz_);
+		link_->ctrlOut(ESDR_REQ_SET_TX_GAIN, (uint16_t)txGain_, nullptr, 0);
+		link_->ctrlOut(ESDR_REQ_SET_FORMAT, (uint16_t)txBits_, nullptr, 0);
+		link_->ctrlOut(ESDR_REQ_SET_MODE, ESDR_MODE_TX, nullptr, 0);
 		txRunning_ = true;
 	}
 
 	void stopTx()
 	{
-		ctrlOut(usb_.h, ESDR_REQ_SET_MODE, ESDR_MODE_OFF, nullptr, 0);
+		link_->ctrlOut(ESDR_REQ_SET_MODE, ESDR_MODE_OFF, nullptr, 0);
 		txRunning_ = false;
 	}
 
@@ -636,30 +1002,26 @@ private:
 		synced_ = false;
 		carryLen_ = 0;
 		rxSamples_ = gaps_ = gapZeros_ = resyncs_ = 0;
-		ctrlOut(usb_.h, ESDR_REQ_SET_MODE, ESDR_MODE_OFF, nullptr, 0);
-		setFreq(usb_.h, (uint64_t)freqHz_);
-		setU32(usb_.h, ESDR_REQ_SET_SAMPLE_RATE, (uint32_t)rateHz_);
+		link_->ctrlOut(ESDR_REQ_SET_MODE, ESDR_MODE_OFF, nullptr, 0);
+		setFreq((uint64_t)freqHz_);
+		setU32(ESDR_REQ_SET_SAMPLE_RATE, (uint32_t)rateHz_);
 		if (bwHz_ > 0) {
-			setU32(usb_.h, ESDR_REQ_SET_BANDWIDTH, (uint32_t)bwHz_);
+			setU32(ESDR_REQ_SET_BANDWIDTH, (uint32_t)bwHz_);
 		}
-		ctrlOut(usb_.h, ESDR_REQ_SET_RX_GAIN, rxAuto_ ? ESDR_GAIN_AUTO : (uint16_t)rxGain_,
+		link_->ctrlOut(ESDR_REQ_SET_RX_GAIN, rxAuto_ ? ESDR_GAIN_AUTO : (uint16_t)rxGain_,
 			nullptr, 0);
-		ctrlOut(usb_.h, ESDR_REQ_SET_FORMAT, (uint16_t)bits_, nullptr, 0);
-		ctrlOut(usb_.h, ESDR_REQ_SET_MODE, ESDR_MODE_RX, nullptr, 0);
+		link_->ctrlOut(ESDR_REQ_SET_FORMAT, (uint16_t)bits_, nullptr, 0);
+		link_->ctrlOut(ESDR_REQ_SET_MODE, ESDR_MODE_RX, nullptr, 0);
 
-		rxStop_ = false;
 		rxRunning_ = true;
-		rxThread_ = std::thread(&SoapyEsdr::rxLoop, this);
+		link_->startRx([this](const uint8_t *p, size_t n) { onBytes(p, n); });
 	}
 
 	void stopRx()
 	{
 		/* The device first: with no transfers queued it would only fill and overflow. */
-		ctrlOut(usb_.h, ESDR_REQ_SET_MODE, ESDR_MODE_OFF, nullptr, 0);
-		rxStop_ = true;
-		if (rxThread_.joinable()) {
-			rxThread_.join();
-		}
+		link_->ctrlOut(ESDR_REQ_SET_MODE, ESDR_MODE_OFF, nullptr, 0);
+		link_->stopRx();
 		rxRunning_ = false;
 		SoapySDR_logf(SOAPY_SDR_INFO,
 			      "esdr: rx stopped: %llu samples, %llu gaps (%llu zero filled), "
@@ -670,57 +1032,11 @@ private:
 	}
 
 	/*
-	 * Async bulk IN into fixed buffers, resubmitted as they complete. No
-	 * timeout: queued transfers fill one after another, so a timeout counted
-	 * from submission would expire on the later ones at low rates; each
-	 * completed buffer is split into whole EBLK blocks (the device never
-	 * splits one across transfers) and converted into the ring. A gap in
-	 * the device's sample index is filled with zeros, bounded, so GRC/gqrx
-	 * see a continuous time axis instead of a jump.
+	 * The receive stream is split into whole EBLK blocks (the device never
+	 * splits one across transfers) and converted into the ring. A gap in the
+	 * device's sample index is filled with zeros, bounded, so GRC/gqrx see a
+	 * continuous time axis instead of a jump.
 	 */
-	void rxLoop()
-	{
-		static constexpr int XFERS = 8;
-		static constexpr size_t XFER_BYTES = 16 * ESDR_BLOCK_BYTES;
-		std::vector<libusb_transfer *> xfers(XFERS);
-		std::vector<std::vector<uint8_t>> bufs(XFERS);
-
-		auto cb = [](libusb_transfer *t) {
-			auto *self = reinterpret_cast<SoapyEsdr *>(t->user_data);
-
-			self->onTransfer(t);
-			if (self->rxStop_ || libusb_submit_transfer(t) != 0) {
-				self->rxPending_--;
-			}
-		};
-		for (int k = 0; k < XFERS; k++) {
-			bufs[k].resize(XFER_BYTES);
-			xfers[k] = libusb_alloc_transfer(0);
-			libusb_fill_bulk_transfer(xfers[k], usb_.h, usb_.ep_in, bufs[k].data(),
-						  (int)XFER_BYTES, cb, this, 0);
-			if (libusb_submit_transfer(xfers[k]) == 0) {
-				rxPending_++;
-			}
-		}
-		while (!rxStop_) {
-			timeval tv{0, 50000};
-
-			libusb_handle_events_timeout(ctx_, &tv);
-		}
-		for (int k = 0; k < XFERS; k++) {
-			libusb_cancel_transfer(xfers[k]);
-		}
-		/* Until every cancelled transfer has come back (at most a second). */
-		for (int tries = 0; tries < 50 && rxPending_ > 0; tries++) {
-			timeval tv{0, 20000};
-
-			libusb_handle_events_timeout(ctx_, &tv);
-		}
-		for (auto *x : xfers) {
-			libusb_free_transfer(x);
-		}
-	}
-
 	/* A plausible block header (the magic alone could occur in sample data). */
 	static bool headerOk(const uint8_t *p)
 	{
@@ -760,16 +1076,8 @@ private:
 	 * Bulk data into whole blocks. Alignment is lost when an earlier session
 	 * stopped mid-block; it is found again on the device's 64-byte packets.
 	 */
-	void onTransfer(libusb_transfer *t)
+	void onBytes(const uint8_t *p, size_t n)
 	{
-		/* A cancelled transfer may still hold data: never drop what arrived. */
-		if (t->status != LIBUSB_TRANSFER_COMPLETED && t->status != LIBUSB_TRANSFER_CANCELLED &&
-		    t->status != LIBUSB_TRANSFER_TIMED_OUT) {
-			return;
-		}
-		const uint8_t *p = t->buffer;
-		size_t n = (size_t)t->actual_length;
-
 		while (n > 0) {
 			if (!synced_) {
 				if (n < 64) {
@@ -813,8 +1121,7 @@ private:
 		}
 	}
 
-	libusb_context *ctx_ = nullptr;
-	UsbEsdr usb_;
+	std::unique_ptr<Link> link_;
 
 	double freqMinHz_ = 100e6, freqMaxHz_ = 6000e6, rateMaxHz_ = 250e3;
 	unsigned rateSteps_ = 5;
@@ -823,6 +1130,8 @@ private:
 	double freqHz_ = 100e6, rateHz_ = 250e3, bwHz_ = 0, corrPpm_ = 0;
 	int rxGain_ = 0, txGain_ = 0;
 	bool rxAuto_ = true;
+	/* Serial link: CF32 and the native format travel as 8-bit items. */
+	bool narrow_ = false;
 	int bits_ = 16;
 	bool float_ = false;
 	/* Stream handles: addresses of these tags. */
@@ -835,12 +1144,8 @@ private:
 	/* CF32 staging: CS16 items popped from the ring. */
 	std::vector<int16_t> conv_ = std::vector<int16_t>(2 * 65536);
 
-	std::thread rxThread_;
-	std::atomic<bool> rxStop_{false};
-	/* Bulk IN transfers submitted and not yet returned (USB event thread). */
-	int rxPending_ = 0;
 	bool rxRunning_ = false;
-	/* Receive parser state and counters (USB event thread). */
+	/* Receive parser state and counters (the link's receive thread). */
 	uint64_t rxSamples_ = 0, gaps_ = 0, gapZeros_ = 0, resyncs_ = 0;
 	uint64_t expect_ = 0;
 	bool haveExpect_ = false, synced_ = false;
@@ -888,6 +1193,15 @@ static SoapySDR::KwargsList findEsdr(const SoapySDR::Kwargs &args)
 	}
 	libusb_free_device_list(list, 1);
 	libusb_exit(ctx);
+	/* The serial link (osmosdr_serial) is not probed: name its port. */
+	if (args.count("port")) {
+		SoapySDR::Kwargs dev;
+
+		dev["driver"] = "esdr";
+		dev["port"] = args.at("port");
+		dev["label"] = "ESP-SDR osmosdr_serial (" + args.at("port") + ")";
+		result.push_back(dev);
+	}
 	return result;
 }
 

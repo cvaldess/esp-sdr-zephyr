@@ -23,6 +23,7 @@ The API reference of the library is generated with Doxygen:
    apps/capture
    apps/sdr_stream
    apps/osmosdr
+   apps/osmosdr_serial
    apps/link
    apps/wpan
    apps/rfprobe

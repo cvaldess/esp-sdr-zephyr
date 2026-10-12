@@ -62,14 +62,15 @@ release notes show the steps from flashing to gqrx.
 ## The library
 
 - ESP32-S3 (tested on the Seeed XIAO ESP32S3), SMP or single core. The
-  ESP32-C6 (Seeed XIAO ESP32C6) has receive capture only: 80 MS/s bursts
-  into SRAM block 2 (0x40840000), analog filter and fixed gain; no transmit
-  yet (on the bench its DAC engine plays I/Q from SRAM, see "Dump and DAC
-  engine" in [doc/undocumented-registers-esp32c6.md](doc/undocumented-registers-esp32c6.md)),
-  no ring and no 40 or 16 MS/s receive rates; the CIC decimated and folded
-  captures work at 80 MS/s. Of the apps, `capture`, `rfprobe` and `wpan`
-  (native radio) run on it; the others need the S3's USB OTG port, PSRAM or
-  transmit. The ESP32-C5 (Waveshare ESP32-C5-Zero, board
+  ESP32-C6 (Seeed XIAO ESP32C6) captures 80 MS/s bursts into SRAM block 2
+  (0x40840000), analog filter and fixed gain, without the 40 or 16 MS/s
+  rates; the CIC decimated and folded captures work at 80 MS/s. Continuous
+  receive and transmit are CPU-paced (`esp_sdr_paced.h`): receive through
+  the modem's IQ estimator, transmit through the TX DC value register, up to
+  250 kS/s over USB-Serial-JTAG with `osmosdr_serial` (the osmosdr protocol
+  and SoapySDR module over a serial link). Of the apps, `capture`, `rfprobe`,
+  `wpan` (native radio) and `osmosdr_serial` run on it; the others need the
+  S3's USB OTG port or PSRAM. The ESP32-C5 (Waveshare ESP32-C5-Zero, board
   `waveshare_esp32c5_zero/esp32c5/hpcore` in `boards/`) has receive
   capture only: bursts at 80, 40, 20, 10, 8 or 4 MS/s into SRAM block 1
   (samples at 0x40830000), 2.4 and 5 GHz; `capture` and `rfprobe` run on it

@@ -15,6 +15,7 @@ zephyr_library_sources(
   src/esp_sdr_rx.c
 )
 zephyr_library_sources_ifdef(CONFIG_SOC_SERIES_ESP32S3 src/esp_sdr_tx.c)
+zephyr_library_sources_ifdef(CONFIG_ESP_SDR_PACED src/esp_sdr_paced.c)
 zephyr_library_sources_ifdef(CONFIG_ESP_SDR_TX src/esp_sdr_tx_stream.c)
 zephyr_library_sources_ifdef(CONFIG_ESP_SDR_TX_DAC src/esp_sdr_tx_dac.c)
 zephyr_library_sources_ifdef(CONFIG_ESP_SDR_TX_DAC_SIMD src/esp_sdr_pie.S)

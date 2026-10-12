@@ -111,6 +111,24 @@
 #define AGC_GAIN_MAX       GENMASK(14, 8)
 #define AGC_GAIN_MAX_VALID 79U
 
+/*
+ * IQ estimator (ROM rom_iq_est_enable, dc_iq_est): sums 80 MHz baseband
+ * samples; the sums (>> 6) can be read while it counts.
+ */
+#define IQE_CTRL0_REG    0x600a0470U
+#define IQE_CTRL0_MODE   GENMASK(27, 26)
+#define IQE_CTRL1_REG    0x600a0474U
+#define IQE_CTRL1_SRC    GENMASK(20, 19)
+#define IQE_CTRL1_COUNT  GENMASK(16, 2)
+#define IQE_CTRL1_START  BIT(1)
+#define IQE_CTRL1_EN     BIT(0)
+#define IQE_SUM_I_REG    0x600a0488U
+#define IQE_SUM_Q_REG    0x600a048cU
+#define IQE_COUNT_MAX    32768U
+/* TX DC value: I 9:0, Q 19:10, drives the DAC once ram_stop_tx_tone() selected the data path. */
+#define TXDC_REG         0x600a0444U
+#define TXDC_IQ          GENMASK(19, 0)
+
 #elif defined(CONFIG_SOC_SERIES_ESP32C5)
 #include <soc/hp_system_reg.h>
 

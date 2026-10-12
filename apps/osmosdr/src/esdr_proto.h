@@ -159,4 +159,33 @@ struct esdr_block_hdr {
 
 #define ESDR_BLOCK_PAYLOAD (ESDR_BLOCK_BYTES - sizeof(struct esdr_block_hdr))
 
+/*
+ * Serial transport (apps/osmosdr_serial, ESP32-C6 over USB-Serial-JTAG: one
+ * byte stream each way). The vendor requests travel as frames: struct
+ * esdr_ser_hdr, then len bytes.
+ *
+ * - Host to device: req is an enum esdr_req. An OUT request carries its data
+ *   (len bytes) and wValue; an IN request (ESDR_SER_IN) carries none, len is
+ *   the most it accepts. ESDR_SER_TX_DATA frames carry transmit samples.
+ * - Device to host: every request gets one reply frame with the same req,
+ *   status 0 or a negative errno, and the IN data. Receive blocks (as on USB,
+ *   starting with ESDR_BLOCK_MAGIC) come between frames, never inside one.
+ *
+ * A request other than ESDR_SER_TX_DATA stops a running stream for as long as
+ * it takes to apply it; the next receive block then carries ESDR_BLK_GAP.
+ */
+#define ESDR_SER_MAGIC 0x4c525345U /* "ESRL" */
+#define ESDR_SER_IN      0x01U
+#define ESDR_SER_TX_DATA 0x80U
+#define ESDR_SER_MAX_DATA 512U
+
+struct esdr_ser_hdr {
+	uint32_t magic;
+	uint8_t req;
+	uint8_t flags;
+	uint16_t value;
+	uint16_t len;
+	int16_t status;
+} __attribute__((packed));
+
 #endif /* ESDR_PROTO_H_ */

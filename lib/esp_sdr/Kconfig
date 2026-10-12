@@ -9,8 +9,8 @@ config ESP_SDR
 	help
 	  Burst capture of raw baseband I/Q samples from the Wi-Fi receiver,
 	  ported from ESPARGOS esp-sdr. Reserves an SRAM bank for the capture
-	  engine (64 KiB on the S3, the 128 KiB block 2 on the C6). The ESP32-C6 captures at 80 MS/s only and has no
-	  transmit or ring support yet. The ESP32-C5 receives at 80 to 4 MS/s
+	  engine (64 KiB on the S3, the 128 KiB block 2 on the C6). The ESP32-C6 captures at 80 MS/s only, and
+	  streams continuously, CPU-paced (ESP_SDR_PACED). The ESP32-C5 receives at 80 to 4 MS/s
 	  into its 128 KiB block 1, which splits the image around it; no
 	  transmit or ring support.
 
@@ -35,6 +35,15 @@ config ESP_SDR_RX_DECIM
 	  frequency, aliasing the whole band down) instead of filtered, for a
 	  wideband power/occupancy survey. Apps that work at the native rate
 	  can leave it out.
+
+config ESP_SDR_PACED
+	bool "CPU-paced streaming (ESP32-C6)"
+	default y
+	depends on SOC_SERIES_ESP32C6 && ESP_SDR_RFTEST
+	help
+	  esp_sdr_rx_paced_*() and esp_sdr_tx_paced_*(): continuous receive
+	  through the modem's IQ estimator and continuous transmit through the
+	  TX DC value register, paced by the CPU from the caller's loop.
 
 config ESP_SDR_BANK1
 	bool "Reserve a second dump bank"

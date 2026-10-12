@@ -133,6 +133,9 @@ step), frequency correction in ppm. gr-osmosdr reaches it through its
    SoapySDRUtil --find="driver=esdr"
    gqrx        # device string: soapy=0,driver=esdr  (add ,serial=<serial> for one board)
 
+``port=/dev/...`` in the device string selects the serial link instead, for the ESP32-C6's
+:ref:`osmosdr_serial <esp_sdr_osmosdr_serial>` app.
+
 In GNU Radio: ``osmosdr.source(args="numchan=1 soapy=0,driver=esdr")`` and
 ``osmosdr.sink(...)`` with the same string, at one of the receive rates
 (250 kS/s down to 15.625 kS/s; other requests get the nearest one, which
