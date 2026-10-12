@@ -7,10 +7,10 @@ Overview
 ********
 
 The :ref:`osmosdr <esp_sdr_osmosdr>` protocol (``../osmosdr/src/esdr_proto.h``) for the
-ESP32-C6, whose only USB port is USB-Serial-JTAG: the vendor requests travel as frames on the
-byte stream, receive blocks and transmit samples in between (the serial transport in
-``esdr_proto.h``). The app drives the port's FIFOs itself; the console is on UART0 (D6 TX, D7
-RX). One direction at a time, as on the S3.
+ESP32-C6 and the ESP32-C5 (receive only), whose only USB port is USB-Serial-JTAG: the vendor
+requests travel as frames on the byte stream, receive blocks and transmit samples in between
+(the serial transport in ``esdr_proto.h``). The app drives the port's FIFOs itself; the console
+is on UART0 (D6 TX, D7 RX on the XIAO). One direction at a time, as on the S3.
 
 - **Receive**: continuous I/Q at 250, 125, 62.5, 31.25 or 15.625 kS/s, 8 or 16 bit. The modem's
   IQ estimator sums the 80 MHz baseband samples in hardware; the CPU reads the running sums at
@@ -34,11 +34,14 @@ Building and flashing
 .. code-block:: console
 
    west build -b xiao_esp32c6/esp32c6/hpcore esp-sdr-zephyr/apps/osmosdr_serial
+   west build -b waveshare_esp32c5_zero/esp32c5/hpcore esp-sdr-zephyr/apps/osmosdr_serial
    west flash --esp-device /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_<mac>-if00
 
-The board config selects the U.FL connector (``CONFIG_XIAO_ESP32C6_EXT_ANTENNA``). Opening the
-port does not reset the board as long as the host leaves DTR and RTS alone (the host tool and
-the SoapySDR module open it raw); tools that toggle them (esptool, terminal programs) reset it.
+The board configs select the U.FL connector. The C5 has the same IQ estimator (0x24 lower) and
+receives the same way; its transmit path is not mapped yet (``SET_MODE`` transmit fails, info
+reports transmit gain 0). Opening the port does not reset the board as long as the host leaves
+DTR and RTS alone (the host tool and the SoapySDR module open it raw); tools that toggle them
+(esptool, terminal programs) reset it.
 
 Host tool
 *********

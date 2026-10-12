@@ -16,7 +16,6 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
-#include <zephyr/linker/section_tags.h>
 
 #include <soc/usb_serial_jtag_reg.h>
 
@@ -89,7 +88,7 @@ static struct {
 } out;
 
 /* Write what is queued while the FIFO takes it; at most @p max bytes. */
-static __ramfunc void out_service(uint32_t max)
+static void out_service(uint32_t max)
 {
 	while (max-- > 0U && out.sent != out.committed && usj_writable()) {
 		sys_write32(out.blk[out.sent % OUT_BLOCKS][out.off++], USB_SERIAL_JTAG_EP1_REG);
@@ -110,7 +109,7 @@ static __ramfunc void out_service(uint32_t max)
  * Write queued bytes until @p due is near. Each byte needs room first: a
  * write to a full FIFO stalls the CPU until the host takes a packet.
  */
-static __ramfunc void out_until(uint32_t due)
+static void out_until(uint32_t due)
 {
 	while (out.sent != out.committed &&
 	       (int32_t)(due - esp_sdr_paced_cycles()) > IO_SLACK_CYCLES) {
@@ -170,7 +169,7 @@ static struct {
 } req;
 
 /* One byte from the host. */
-static __ramfunc void req_feed(uint8_t b)
+static void req_feed(uint8_t b)
 {
 	if (req.tx_left > 0U) {
 		txr.buf[txr.head++ % TX_RING_BYTES] = b;
@@ -205,7 +204,7 @@ static __ramfunc void req_feed(uint8_t b)
 }
 
 /* Read from the host while there is room for transmit data; at most @p max bytes. */
-static __ramfunc void in_service(uint32_t max)
+static void in_service(uint32_t max)
 {
 	while (max-- > 0U && !req.ready && usj_readable()) {
 		if (req.tx_left > 0U && txr.head - txr.tail >= TX_RING_BYTES) {
@@ -216,7 +215,7 @@ static __ramfunc void in_service(uint32_t max)
 }
 
 /* Read from the host until @p due is near (or nothing waits, or the transmit ring is full). */
-static __ramfunc void in_until(uint32_t due)
+static void in_until(uint32_t due)
 {
 	while (!req.ready && (int32_t)(due - esp_sdr_paced_cycles()) > IO_SLACK_CYCLES &&
 	       usj_readable()) {
@@ -457,7 +456,7 @@ static void pacing_stats(void)
 	stats.ring_late_max = MAX(stats.ring_late_max, ps.late_max);
 }
 
-static __ramfunc void out_commit(void)
+static void out_commit(void)
 {
 	struct esdr_block_hdr *h = (struct esdr_block_hdr *)out.blk[out.committed % OUT_BLOCKS];
 
@@ -472,7 +471,7 @@ static __ramfunc void out_commit(void)
 	stats.rx_samples += sys_le16_to_cpu(h->samples);
 }
 
-static __ramfunc void run_rx(void)
+static void run_rx(void)
 {
 	uint32_t per_block = ESDR_BLOCK_PAYLOAD / (want.bits == 16U ? 4U : 2U);
 	uint32_t k = rx_scale();
@@ -536,7 +535,7 @@ static __ramfunc void run_rx(void)
 	out.next_flags = ESDR_BLK_GAP;
 }
 
-static __ramfunc bool tx_input(void *user, int16_t *i, int16_t *q)
+static bool tx_input(void *user, int16_t *i, int16_t *q)
 {
 	uint32_t item = want.bits == 16U ? 4U : 2U;
 
@@ -557,7 +556,7 @@ static __ramfunc bool tx_input(void *user, int16_t *i, int16_t *q)
 	return true;
 }
 
-static __ramfunc void run_tx(void)
+static void run_tx(void)
 {
 	unsigned int l = 8;
 	struct esp_sdr_paced_stats ps;

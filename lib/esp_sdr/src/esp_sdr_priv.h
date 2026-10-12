@@ -181,6 +181,18 @@
 /* Upstream's C5 limit. */
 #define AGC_GAIN_MAX_VALID 89U
 
+/* IQ estimator: the C6 block 0x24 lower (libphy phy_iq_est_enable_new, dc_iq_est_test). */
+#define IQE_CTRL0_REG    0x600a044cU
+#define IQE_CTRL0_MODE   GENMASK(27, 26)
+#define IQE_CTRL1_REG    0x600a0450U
+#define IQE_CTRL1_SRC    GENMASK(20, 19)
+#define IQE_CTRL1_COUNT  GENMASK(16, 2)
+#define IQE_CTRL1_START  BIT(1)
+#define IQE_CTRL1_EN     BIT(0)
+#define IQE_SUM_I_REG    0x600a0464U
+#define IQE_SUM_Q_REG    0x600a0468U
+#define IQE_COUNT_MAX    32768U
+
 #else
 #error "esp_sdr: unsupported SoC"
 #endif

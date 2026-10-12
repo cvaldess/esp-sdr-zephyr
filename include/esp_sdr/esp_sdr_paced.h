@@ -4,8 +4,9 @@
 
 /**
  * @file
- * @brief ESP-SDR CPU-paced streaming (ESP32-C6): continuous receive and
- * transmit, one sample at a time from the caller's loop.
+ * @brief ESP-SDR CPU-paced streaming (ESP32-C6, receive also on the
+ * ESP32-C5): continuous receive and transmit, one sample at a time from the
+ * caller's loop.
  *
  * The C6 has no dump path that runs gapless at a low rate and no DAC buffer
  * the CPU can refill while it plays, so the CPU paces both directions:
@@ -120,7 +121,12 @@ static inline uint32_t esp_sdr_paced_cycles(void)
 {
 	uint32_t v;
 
+#if defined(CONFIG_SOC_SERIES_ESP32C6)
+	/* The C6's machine performance counter (mpccr). */
 	__asm__ volatile("csrr %0, 0x7e2" : "=r"(v));
+#else
+	__asm__ volatile("csrr %0, cycle" : "=r"(v));
+#endif
 	return v;
 }
 

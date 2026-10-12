@@ -37,9 +37,9 @@ config ESP_SDR_RX_DECIM
 	  can leave it out.
 
 config ESP_SDR_PACED
-	bool "CPU-paced streaming (ESP32-C6)"
+	bool "CPU-paced streaming (ESP32-C6; receive only on the ESP32-C5)"
 	default y
-	depends on SOC_SERIES_ESP32C6 && ESP_SDR_RFTEST
+	depends on (SOC_SERIES_ESP32C6 || SOC_SERIES_ESP32C5) && ESP_SDR_RFTEST
 	help
 	  esp_sdr_rx_paced_*() and esp_sdr_tx_paced_*(): continuous receive
 	  through the modem's IQ estimator and continuous transmit through the

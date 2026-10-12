@@ -10,7 +10,6 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
-#include <zephyr/linker/section_tags.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
@@ -31,24 +30,28 @@ LOG_MODULE_DECLARE(esp_sdr, CONFIG_ESP_SDR_LOG_LEVEL);
 /* librftest: tone backoff in quarter dB; the tone path also turns the TX chain on. */
 #define TX_BACKOFF_STEP 8U
 
+#if defined(CONFIG_SOC_SERIES_ESP32C6)
 extern void esp_phy_wifi_tx_tone(uint32_t start, uint32_t chan, uint32_t backoff);
+#endif
 
 static struct esp_sdr_paced_stats stats;
-static bool rx_on, tx_on;
+static bool rx_on;
+#if defined(CONFIG_SOC_SERIES_ESP32C6)
+static bool tx_on;
+#endif
 
-/* Machine performance counter (mpccr), counting CPU cycles. */
 static inline uint32_t cycles(void)
 {
-	uint32_t v;
-
-	__asm__ volatile("csrr %0, 0x7e2" : "=r"(v));
-	return v;
+	return esp_sdr_paced_cycles();
 }
 
 static void cycles_enable(void)
 {
+#if defined(CONFIG_SOC_SERIES_ESP32C6)
+	/* The machine performance counter (mpccr) counts CPU cycles. */
 	__asm__ volatile("csrw 0x7e0, %0" ::"r"(1));
 	__asm__ volatile("csrw 0x7e1, %0" ::"r"(1));
+#endif
 }
 
 static inline void note_late(uint32_t late, uint32_t step)
@@ -66,7 +69,7 @@ static struct {
 	int32_t pi, pq;
 } rxp;
 
-__ramfunc static void iqe_start(void)
+static void iqe_start(void)
 {
 	sys_write32(rxp.ctrl1 | IQE_CTRL1_EN, IQE_CTRL1_REG);
 	sys_write32(rxp.ctrl1 | IQE_CTRL1_EN | IQE_CTRL1_START, IQE_CTRL1_REG);
@@ -105,7 +108,7 @@ int esp_sdr_rx_paced_start(uint32_t rate_hz)
 	return 0;
 }
 
-__ramfunc bool esp_sdr_rx_paced_poll(int32_t *i, int32_t *q)
+bool esp_sdr_rx_paced_poll(int32_t *i, int32_t *q)
 {
 	uint32_t now = cycles();
 	int32_t si, sq, q1;
@@ -135,7 +138,7 @@ __ramfunc bool esp_sdr_rx_paced_poll(int32_t *i, int32_t *q)
 	return true;
 }
 
-__ramfunc uint32_t esp_sdr_rx_paced_slack(void)
+uint32_t esp_sdr_rx_paced_slack(void)
 {
 	int32_t d = (int32_t)(rxp.target - cycles());
 
@@ -154,6 +157,7 @@ void esp_sdr_rx_paced_stop(void)
 	k_mutex_unlock(&esp_sdr_lock);
 }
 
+#if defined(CONFIG_SOC_SERIES_ESP32C6)
 static struct {
 	uint32_t step, target, ph, l, pos, upper, next;
 	esp_sdr_tx_paced_input_t input;
@@ -249,7 +253,7 @@ static inline uint32_t iq10(int32_t i, int32_t q)
 	return ((uint32_t)CLAMP(i, -511, 511) & 0x3ffU) | (((uint32_t)CLAMP(q, -511, 511) & 0x3ffU) << 10);
 }
 
-__ramfunc bool esp_sdr_tx_paced_poll(void)
+bool esp_sdr_tx_paced_poll(void)
 {
 	uint32_t now = cycles();
 	const int16_t *c, *xi, *xq;
@@ -293,7 +297,7 @@ __ramfunc bool esp_sdr_tx_paced_poll(void)
 	return true;
 }
 
-__ramfunc uint32_t esp_sdr_tx_paced_slack(void)
+uint32_t esp_sdr_tx_paced_slack(void)
 {
 	int32_t d = (int32_t)(txp.target - cycles());
 
@@ -312,19 +316,64 @@ void esp_sdr_tx_paced_stop(void)
 	(void)esp_sdr_retune();
 	k_mutex_unlock(&esp_sdr_lock);
 }
+#else
+/* Transmit through the TX DC value register is mapped on the C6 only. */
+unsigned int esp_sdr_tx_paced_power_max(void)
+{
+	return 0;
+}
+
+void esp_sdr_tx_paced_range(uint32_t *min_mhz, uint32_t *max_mhz)
+{
+	*min_mhz = 0;
+	*max_mhz = 0;
+}
+
+int esp_sdr_tx_paced_start(uint32_t rate_hz, unsigned int interp, unsigned int power,
+			   esp_sdr_tx_paced_input_t input, void *user)
+{
+	ARG_UNUSED(rate_hz);
+	ARG_UNUSED(interp);
+	ARG_UNUSED(power);
+	ARG_UNUSED(input);
+	ARG_UNUSED(user);
+	return -ENOTSUP;
+}
+
+bool esp_sdr_tx_paced_poll(void)
+{
+	return false;
+}
+
+uint32_t esp_sdr_tx_paced_slack(void)
+{
+	return 0;
+}
+
+void esp_sdr_tx_paced_stop(void)
+{
+}
+#endif
 
 void esp_sdr_paced_sync(void)
 {
+#if defined(CONFIG_SOC_SERIES_ESP32C6)
 	if (tx_on) {
 		txp.target = cycles() + txp.step;
-	} else {
-		rxp.target = cycles() + rxp.step;
+		return;
 	}
+#endif
+	rxp.target = cycles() + rxp.step;
 }
 
-__ramfunc uint32_t esp_sdr_paced_deadline(void)
+uint32_t esp_sdr_paced_deadline(void)
 {
-	return tx_on ? txp.target : rxp.target;
+#if defined(CONFIG_SOC_SERIES_ESP32C6)
+	if (tx_on) {
+		return txp.target;
+	}
+#endif
+	return rxp.target;
 }
 
 void esp_sdr_paced_get_stats(struct esp_sdr_paced_stats *s)

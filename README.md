@@ -73,8 +73,10 @@ release notes show the steps from flashing to gqrx.
   S3's USB OTG port or PSRAM. The ESP32-C5 (Waveshare ESP32-C5-Zero, board
   `waveshare_esp32c5_zero/esp32c5/hpcore` in `boards/`) has receive
   capture only: bursts at 80, 40, 20, 10, 8 or 4 MS/s into SRAM block 1
-  (samples at 0x40830000), 2.4 and 5 GHz; `capture` and `rfprobe` run on it
-  ("ESP32-C5" in [doc/hardware-quirks.md](doc/hardware-quirks.md)).
+  (samples at 0x40830000), 2.4 and 5 GHz, and continuous CPU-paced receive
+  up to 250 kS/s over USB-Serial-JTAG; `capture`, `rfprobe` and
+  `osmosdr_serial` (receive) run on it ("ESP32-C5" in
+  [doc/hardware-quirks.md](doc/hardware-quirks.md)).
 - Tuning: the API takes 100 to 6000 MHz, but the PLL only locks over a range
   that differs from chip to chip. Below 2210 MHz the LO goes through the 5/6
   divider (PLL at 1.2 times the frequency), for receive and transmit. After
