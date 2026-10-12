@@ -104,6 +104,9 @@ not scan, connect or start an access point while using it.
 Documentation
 -------------
 
+Published at https://cyber-murmel.github.io/esp-sdr-zephyr. To build it
+yourself:
+
 ::
 
    cd esp-sdr-zephyr/doc
@@ -112,7 +115,7 @@ Documentation
 
 The site is in ``doc/_build_sphinx/html``, with the API reference in its
 ``doxygen/`` folder. CI builds it with warnings as errors
-(``SPHINXOPTS=-W``) and publishes it to GitHub Pages.
+(``SPHINXOPTS=-W``) and publishes it.
 
 Versioning
 ----------
