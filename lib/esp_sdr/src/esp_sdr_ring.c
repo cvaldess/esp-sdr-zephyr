@@ -11,7 +11,7 @@
  * bank while it runs splits the stream into gapless units, one per visit:
  *  - while the engine fills bank b, bank b + 1 gets sentinels where the next
  *    unit is predicted to start and to end;
- *  - once THRESHOLD pairs are in bank b, the engine moves to bank b + 1;
+ *  - once a unit length of pairs is in bank b, the engine moves to bank b + 1;
  *  - the finished unit's first and last pair are found by binary search in
  *    the sentinel windows, and each unit must start where the previous one
  *    ended, which proves the stream gapless.
@@ -44,27 +44,61 @@
 #define RING_BANKS     3U
 #define RING_PAIRS     16384U
 #define RING_MASK      (RING_PAIRS - 1U)
-/* Switch banks after this many pairs. */
-#define THRESHOLD      12288U
-/* Sentinels from a unit's earliest possible start and end. */
-#define START_GUARD    3072U
-#define END_GUARD      4096U
-/* Switch lateness allowed: 2 LATE_LIMIT < END_GUARD. */
-#define LATE_LIMIT     2000U
 /* Unit 0: its whole bank holds sentinels; stay clear of its start. */
-#define UNIT0_END_GUARD 1024U
-#define MIN_PAIRS      THRESHOLD
-#define MAX_PAIRS      (THRESHOLD + LATE_LIMIT + 64U)
+#define UNIT0_END_WIN  1024U
 #define NOT_FOUND      0xffffffffU
 #define RING_SENTINEL  0xa5c33c5aU
 
-BUILD_ASSERT(START_GUARD + THRESHOLD <= RING_PAIRS, "start window overlaps");
-BUILD_ASSERT(END_GUARD + THRESHOLD <= RING_PAIRS, "end window overlaps the unit start");
-BUILD_ASSERT(2U * LATE_LIMIT + 64U < END_GUARD && LATE_LIMIT + 64U < START_GUARD, "guards");
-
-/* Filter work per slice, and the input chunk through both stages. */
+/* Filter work per slice at most, and the input chunk through both stages. */
 #define SLICE_PAIRS 1024U
 #define FIR_CHUNK   512U
+
+/*
+ * The unit geometry of a run, from its unit length (esp_sdr_ring_cfg):
+ * the engine moves on after thr pairs, at most late pairs late; sentinels
+ * cover sg pairs from a unit's earliest start and eg from its earliest end.
+ * The default unit: thr 12288, sg 3072, eg 4096, late 2000.
+ */
+struct geom {
+	uint32_t thr, sg, eg, late;
+	/* Unit 0: start window, shortest length. */
+	uint32_t sg0, min0;
+	uint32_t slice;
+};
+
+static int geom_init(struct geom *g, uint32_t unit)
+{
+	if (unit == 0U) {
+		unit = ESP_SDR_RING_UNIT_DEFAULT;
+	}
+	if (unit < ESP_SDR_RING_UNIT_MIN || unit > ESP_SDR_RING_UNIT_DEFAULT || unit % 64U != 0U) {
+		return -EINVAL;
+	}
+	g->thr = unit;
+	/* A start window longer than the unit would overlap the end window. */
+	g->sg = MIN(3072U, unit);
+	g->late = MIN(2000U, g->sg - 128U);
+	g->eg = MIN(4096U, 2U * g->late + 128U);
+	g->sg0 = 1024U + MIN(2048U, unit / 2U);
+	g->min0 = unit - MIN(1024U, unit / 2U);
+	g->slice = MIN(SLICE_PAIRS, unit / 4U);
+	if (g->late + 64U >= g->sg || 2U * g->late + 64U >= g->eg ||
+	    g->sg + g->thr > RING_PAIRS || g->eg + g->thr > RING_PAIRS) {
+		return -EINVAL;
+	}
+	return 0;
+}
+
+/*
+ * Two banks: a bank gets the next unit but one while the unit before it may
+ * still be filtered, so the next unit's windows (up to two units and the
+ * end window ahead) must stay clear of where the previous visit began (a
+ * unit and its lateness back), mod the ring.
+ */
+static bool geom_two_banks(const struct geom *g)
+{
+	return 3U * g->thr + g->eg + g->late <= RING_PAIRS;
+}
 
 #define PI_F 3.14159265f
 
@@ -434,7 +468,54 @@ static struct {
 	uint64_t fir_cycles, fir_pairs;
 	/* The interrupt key of the run, for the windows in irq_window(). */
 	unsigned int irq_key;
-} rs;
+	struct geom g;
+	/* Banks in the rotation; burst_ok: the spare bank is for bursts. */
+	unsigned int nbanks;
+	bool burst_ok;
+	/* Slowest waveform slice seen. */
+	uint32_t gen_cost;
+} rs ESP_SDR_HIGH_RAM; /* cleared at each run or bench start */
+
+/*
+ * The run's position for other CPUs (esp_sdr_ring_now()): pair index @c index
+ * sits at ring position @c pos, renewed once per unit (the write index wraps
+ * after 16384 pairs). @c seq is odd while it changes, and 0 outside a run
+ * and before unit 0 is located.
+ */
+static struct {
+	atomic_t seq;
+	uint64_t index;
+	uint32_t pos;
+} now_ref;
+
+static void now_publish(uint64_t index, uint32_t pos)
+{
+	atomic_val_t q = atomic_get(&now_ref.seq);
+
+	atomic_set(&now_ref.seq, q + 1);
+	now_ref.index = index;
+	now_ref.pos = pos;
+	atomic_set(&now_ref.seq, q + 2);
+}
+
+bool esp_sdr_ring_now(uint64_t *pair)
+{
+	for (int tries = 0; tries < 8; tries++) {
+		atomic_val_t q = atomic_get(&now_ref.seq);
+		uint64_t index = now_ref.index;
+		uint32_t pos = now_ref.pos;
+		uint32_t wi = write_index();
+
+		if (q == 0) {
+			return false;
+		}
+		if ((q & 1) == 0 && atomic_get(&now_ref.seq) == q) {
+			*pair = index + ((wi - pos) & RING_MASK);
+			return true;
+		}
+	}
+	return false;
+}
 
 /*
  * Interrupts pending on this CPU run in a short window between polls. The
@@ -522,33 +603,42 @@ HOT static void box4_feed(const uint32_t *p, uint32_t a, uint32_t m)
 	uint32_t k2 = 0;
 
 	if (rs.cfg->subsample) {
-		/* Phase-0 pairs only: there the -fs/4 mix is 1. Same full scale as the sums. */
-		while (m != 0U) {
-			uint32_t skip = (4U - b4.ph) & 3U;
+		/*
+		 * Phase-0 pairs only: there the -fs/4 mix is 1. Same full scale as
+		 * the sums. Locals throughout: the build does not assume strict
+		 * aliasing, so every store would reload the run state.
+		 */
+		const esp_sdr_ring_sink_t sink = rs.cfg->sink;
+		void *const user = rs.cfg->user;
+		uint32_t skip = (4U - b4.ph) & 3U, n;
+		uint64_t at = rs.out_index;
 
-			if (skip >= m) {
-				b4.ph = (b4.ph + m) & 3U;
-				break;
-			}
-			w += skip;
-			m -= skip;
-			out_i[k2] = (int16_t)(esp_sdr_rx_i(*w) * 16);
-			out_q[k2] = (int16_t)(esp_sdr_rx_q(*w) * 16);
-			w++;
-			m--;
-			b4.ph = 1U;
-			if (++k2 == OUT_MAX) {
-				rs.cfg->sink(rs.cfg->user, out_i, out_q, k2, rs.out_index);
-				rs.out_index += k2;
-				rs.st->samples += k2;
-				k2 = 0;
-			}
+		if (skip >= m) {
+			b4.ph = (b4.ph + m) & 3U;
+			return;
 		}
-		if (k2 != 0U) {
-			rs.cfg->sink(rs.cfg->user, out_i, out_q, k2, rs.out_index);
-			rs.out_index += k2;
-			rs.st->samples += k2;
+		w += skip;
+		m -= skip;
+		/* Pairs 0, 4, 8, ... of the m left; the next one is m & 3 past the last. */
+		n = (m + 3U) / 4U;
+		b4.ph = m & 3U;
+		while (n != 0U) {
+			uint32_t c = MIN(n, OUT_MAX);
+			int16_t *oi = out_i, *oq = out_q;
+
+			for (uint32_t k = 0; k < c; k++) {
+				uint32_t v = w[4U * k];
+
+				oi[k] = (int16_t)(((int32_t)(v << 12) >> 22) * 16);
+				oq[k] = (int16_t)(((int32_t)(v << 22) >> 22) * 16);
+			}
+			sink(user, out_i, out_q, c, at);
+			at += c;
+			w += 4U * c;
+			n -= c;
 		}
+		rs.st->samples += at - rs.out_index;
+		rs.out_index = at;
 		return;
 	}
 
@@ -847,11 +937,224 @@ static inline void pie_enable(void)
 /* Prepare bank nb for the unit after the one now expected at e. */
 HOT static void prepare(unsigned int nb, uint32_t e, uint32_t *start_probe, uint32_t *end_probe)
 {
-	release_bank(nb);
-	start_probe[nb] = (e + THRESHOLD) & RING_MASK;
-	end_probe[nb] = (start_probe[nb] + THRESHOLD) & RING_MASK;
-	fill_sentinels(nb, start_probe[nb], START_GUARD);
-	fill_sentinels(nb, end_probe[nb], END_GUARD);
+	/* Two banks: nb still holds the unit before, released at the switch. */
+	if (rs.nbanks == RING_BANKS) {
+		release_bank(nb);
+	}
+	start_probe[nb] = (e + rs.g.thr) & RING_MASK;
+	end_probe[nb] = (start_probe[nb] + rs.g.thr) & RING_MASK;
+	fill_sentinels(nb, start_probe[nb], rs.g.sg);
+	fill_sentinels(nb, end_probe[nb], rs.g.eg);
+}
+
+/*
+ * ---- bursts (esp_sdr_ring_burst_*()) ----
+ *
+ * CPU 0 arms, fires or cancels through burst_state; the run (CPU 1) builds
+ * the waveform between polls, stops at the first unit boundary at or after
+ * the end pair, hands the last unit on, turns the front end to TX, plays
+ * the spare bank once at the fire pair, turns back to RX and restarts.
+ */
+enum { BURST_IDLE, BURST_ARMED, BURST_FIRE, BURST_CANCEL };
+#define BURST_BANK 2U
+/* Waveform words per slice between polls (about 1700 cycles with slot copies). */
+#define GEN_SLICE  400U
+
+static atomic_t burst_state;
+/* Above the banks (not zeroed at boot; internal RAM below them is short). */
+static struct {
+	uint64_t end_pair, limit_pair, at_pair;
+	esp_sdr_ring_gen_t gen;
+	void *user;
+	uint32_t from, words;
+} burst ESP_SDR_HIGH_RAM;
+static struct esp_sdr_ring_burst_stats bst ESP_SDR_HIGH_RAM;
+
+uint32_t *esp_sdr_ring_burst_buf(size_t *words)
+{
+	*words = ESP_SDR_SAMPLES_MAX;
+	return bank_ptr(BURST_BANK);
+}
+
+int esp_sdr_ring_burst_arm(uint64_t end_pair, uint64_t limit_pair, esp_sdr_ring_gen_t gen,
+			   void *user, uint32_t from, uint32_t words)
+{
+	if (words > ESP_SDR_SAMPLES_MAX || words < ESP_SDR_SAMPLES_MIN || from > words ||
+	    gen == NULL) {
+		return -EINVAL;
+	}
+	if (!rs.burst_ok || !esp_sdr_ring_active() || atomic_get(&burst_state) != BURST_IDLE) {
+		return -EBUSY;
+	}
+	burst.end_pair = end_pair;
+	burst.limit_pair = limit_pair;
+	burst.gen = gen;
+	burst.user = user;
+	burst.from = from;
+	burst.words = words;
+	/* Atomic after the fields: the run reads them once it sees the state. */
+	return atomic_cas(&burst_state, BURST_IDLE, BURST_ARMED) ? 0 : -EBUSY;
+}
+
+bool esp_sdr_ring_burst_fire(uint64_t at_pair)
+{
+	burst.at_pair = at_pair;
+	return atomic_cas(&burst_state, BURST_ARMED, BURST_FIRE);
+}
+
+void esp_sdr_ring_burst_cancel(void)
+{
+	(void)atomic_cas(&burst_state, BURST_ARMED, BURST_CANCEL);
+}
+
+bool esp_sdr_ring_burst_busy(void)
+{
+	return atomic_get(&burst_state) != BURST_IDLE;
+}
+
+void esp_sdr_ring_burst_get_stats(struct esp_sdr_ring_burst_stats *stats)
+{
+	*stats = bst;
+}
+
+/* One waveform slice; returns whether more is left. */
+static __attribute__((noinline)) bool gen_slice(uint32_t *pos, uint32_t n)
+{
+	n = MIN(n, burst.words - *pos);
+	if (n != 0U) {
+		burst.gen(burst.user, bank_ptr(BURST_BANK) + *pos, *pos, n);
+		*pos += n;
+	}
+	return *pos < burst.words;
+}
+
+/*
+ * The capture has stopped at pair p_stop (cycle t_stop): play the burst if
+ * it is fired in time, and leave the front end in RX.
+ */
+/* Not in IRAM (internal RAM is short): only its spin to the fire pair is timed, from the cache. */
+static __attribute__((noinline, optimize("O3"))) void burst_run(uint32_t cpp, uint32_t saved, uint64_t p_stop, uint32_t t_stop,
+			  uint32_t *gen_pos)
+{
+	const uint32_t dac_ctrl = DUMP_CTRL_RUN | FIELD_PREP(DUMP_CTRL_COUNT, burst.words);
+	atomic_val_t s;
+	uint32_t t, lines;
+
+#define PAIR_NOW() (p_stop + (ccount() - t_stop) / cpp)
+	/* The last unit to the PHY first: its verdict runs meanwhile on the other CPU. */
+	while (fir_slice(rs.g.slice)) {
+	}
+	bst.gen_left_max = MAX(bst.gen_left_max, burst.words - *gen_pos);
+	while (gen_slice(gen_pos, ESP_SDR_SAMPLES_MAX)) {
+	}
+	/* The capture side's control register clear, as for any DAC session. */
+	REG_WRITE(DUMP_CTRL_REG, 0);
+	/*
+	 * No settle wait: a fire due earlier starts the preamble (eight symbols,
+	 * 128 us; a receiver needs about half) while the front end still settles.
+	 */
+	esp_sdr_tx_front_end();
+	bst.ready_last_pairs = (int32_t)(PAIR_NOW() - burst.end_pair);
+	bst.ready_max_pairs = MAX(bst.ready_max_pairs, bst.ready_last_pairs);
+	for (;;) {
+		uint32_t tw = ccount();
+
+		(void)stall_poll();
+		(void)irq_window(&lines);
+		bst.window_max_cyc = MAX(bst.window_max_cyc, ccount() - tw);
+		s = atomic_get(&burst_state);
+		if (s == BURST_FIRE || s == BURST_CANCEL) {
+			break;
+		}
+		if (PAIR_NOW() > burst.limit_pair &&
+		    atomic_cas(&burst_state, BURST_ARMED, BURST_CANCEL)) {
+			bst.timeouts++;
+			s = BURST_CANCEL;
+			break;
+		}
+	}
+	if (s == BURST_FIRE) {
+		uint64_t at = burst.at_pair;
+
+		bst.seen_last_pairs = (int32_t)(PAIR_NOW() - burst.end_pair);
+		bst.seen_max_pairs = MAX(bst.seen_max_pairs, bst.seen_last_pairs);
+		if (PAIR_NOW() > burst.limit_pair) {
+			bst.skipped++;
+		} else {
+			int32_t f;
+
+			/* Spin to the fire pair, unless it has passed. */
+			if (at > p_stop) {
+				t = t_stop + (uint32_t)(at - p_stop) * cpp;
+				while ((int32_t)(t - ccount()) > 0) {
+				}
+			}
+			select_bank(saved, BIT(BURST_BANK));
+			REG_WRITE(DAC_TRIG_REG, 0);
+			REG_WRITE(DAC_TRIG_REG, dac_ctrl);
+			REG_WRITE(DAC_TRIG_REG, dac_ctrl | DUMP_CTRL_TRIGGER);
+			REG_WRITE(DAC_TRIG_REG, dac_ctrl);
+			t = ccount();
+			f = (int32_t)(p_stop + (t - t_stop) / cpp - burst.end_pair);
+			bst.fired++;
+			/* More than 2 us after the fire pair: the front end or the verdict was late. */
+			if ((int64_t)(p_stop + (t - t_stop) / cpp) - (int64_t)at > 32) {
+				bst.late++;
+				/* The fire was waiting when the front end got ready. */
+				if (bst.seen_last_pairs - bst.ready_last_pairs < 16) {
+					bst.late_tx++;
+				}
+			}
+			bst.fire_last_pairs = f;
+			bst.fire_min_pairs = bst.fired == 1U ? f : MIN(bst.fire_min_pairs, f);
+			bst.fire_max_pairs = bst.fired == 1U ? f : MAX(bst.fire_max_pairs, f);
+			/* One pass at 40 MS/s: 6 cycles per word at 240 MHz, plus a margin. */
+			while ((REG_READ(DAC_TRIG_REG) & DUMP_CTRL_DONE) == 0U &&
+			       ccount() - t < 7U * burst.words + 24000U) {
+			}
+			bst.dac_last_cyc = (REG_READ(DAC_TRIG_REG) & DUMP_CTRL_DONE) != 0U ? ccount() - t
+											   : 0U;
+			REG_WRITE(DAC_TRIG_REG, 0);
+		}
+	} else {
+		bst.cancelled++;
+	}
+	REG_WRITE(DUMP_CTRL_REG, 0);
+	esp_sdr_rx_resume();
+#undef PAIR_NOW
+}
+
+/*
+ * A burst the run has not taken yet: armed, or already fired or cancelled
+ * before the run saw it armed. Returns whether it is now the run's.
+ */
+static __attribute__((noinline)) bool burst_pickup(uint64_t index, uint32_t *gen_pos)
+{
+	if (atomic_get(&burst_state) == BURST_CANCEL) {
+		bst.cancelled++;
+		atomic_set(&burst_state, BURST_IDLE);
+		return false;
+	}
+	*gen_pos = burst.from;
+	if (index > burst.end_pair) {
+		bst.arm_late++;
+	}
+	return true;
+}
+
+/* Fresh sentinels in every bank of the rotation and the engine running into bank 0. */
+static __attribute__((noinline)) void engine_start(uint32_t ctrl, uint32_t saved, uint32_t *epoch, uint32_t *w0)
+{
+	for (unsigned int k = 0; k < rs.nbanks; k++) {
+		fill_sentinels(k, 0, RING_PAIRS);
+	}
+	REG_WRITE(DUMP_CTRL_REG, 0);
+	REG_WRITE(DUMP_CONFIG_REG, DUMP_CONFIG_IQ);
+	REG_WRITE(DUMP_CTRL_REG, ctrl);
+	select_bank(saved, BIT(0));
+	REG_WRITE(DUMP_CTRL_REG, ctrl | DUMP_CTRL_RUN);
+	*epoch = ccount();
+	*w0 = write_index();
 }
 
 HOT static void ring_loop(void)
@@ -860,36 +1163,28 @@ HOT static void ring_loop(void)
 	const uint32_t max_age = (RING_PAIRS - 128U) * cpp;
 	const uint32_t settle = 16U * cpp;
 	const uint32_t prep_pairs = 20000U / cpp + 1024U;
+	const struct geom g = rs.g;
 	const uint32_t ctrl = DUMP_CTRL_CIRCULAR | DUMP_CTRL_16MSPS;
 	const uint32_t saved = REG_READ(SENSITIVE_INTERNAL_SRAM_USAGE_3_REG);
+	const unsigned int nbanks = rs.nbanks;
 	uint32_t start_probe[RING_BANKS] = {0}, end_probe[RING_BANKS] = {0};
 	struct esp_sdr_ring_stats *st = rs.st;
-	uint32_t epoch, w0, expected;
+	uint32_t epoch, w0, expected, gen_pos = 0;
 	uint64_t index = 0, t_start;
 	unsigned int b = 0;
-	bool prepared = false;
+	bool prepared = false, fresh = true, armed = false;
 
-	for (unsigned int k = 0; k < RING_BANKS; k++) {
-		fill_sentinels(k, 0, RING_PAIRS);
-	}
-
-	REG_WRITE(DUMP_CTRL_REG, 0);
-	REG_WRITE(DUMP_CONFIG_REG, DUMP_CONFIG_IQ);
-	REG_WRITE(DUMP_CTRL_REG, ctrl);
-	select_bank(saved, BIT(0));
 	t_start = k_cycle_get_64();
-	REG_WRITE(DUMP_CTRL_REG, ctrl | DUMP_CTRL_RUN);
-	epoch = ccount();
-	w0 = write_index();
+	engine_start(ctrl, saved, &epoch, &w0);
 	/* Unit 0 starts near w0; its exact start is found after the switch. */
 	expected = (w0 - 256U) & RING_MASK;
 
-	for (unsigned int unit = 0;; unit++) {
-		const unsigned int next = (b + 1U) % RING_BANKS;
+	for (;;) {
+		const unsigned int next = (b + 1U) % nbanks;
 		uint32_t wi, written, late, first, end, count, t;
-		bool stop = false, stop_checked = false;
+		bool stop = false, stop_checked = false, burst_stop = false;
 
-		/* 1. Poll, with filter slices between polls. */
+		/* 1. Poll, with filter and waveform slices between polls. */
 		for (;;) {
 			if (stall_poll()) {
 				st->stalls++;
@@ -906,7 +1201,7 @@ HOT static void ring_loop(void)
 				fail(ESP_SDR_RING_AGE, ccount() - epoch);
 				break;
 			}
-			if (written >= THRESHOLD) {
+			if (written >= g.thr) {
 				if (!prepared) {
 					/* A slice ran past the preparation deadline. */
 					prepare(next, expected, start_probe, end_probe);
@@ -916,52 +1211,75 @@ HOT static void ring_loop(void)
 				}
 				break;
 			}
-			if (!stop_checked && written >= THRESHOLD / 2U) {
+			if (!stop_checked && written >= g.thr / 2U) {
 				/* Decided mid-unit: only the index read sits before the switch. */
 				stop_checked = true;
 				stop = atomic_get(&stop_req) != 0;
 				continue;
 			}
 			if (!prepared &&
-			    (bank_idle(next) || written + prep_pairs + LATE_LIMIT >= THRESHOLD)) {
+			    (bank_idle(next) || written + prep_pairs + g.late >= g.thr)) {
 				prepare(next, expected, start_probe, end_probe);
 				prepared = true;
 				continue;
 			}
-			if (rs.q_len != 0U) {
-				/* A slice only if the slowest one seen still fits. */
-				uint32_t sl_pairs = rs.slice_cost / cpp + 256U;
-				uint32_t limit = prepared ? THRESHOLD + LATE_LIMIT / 2U
-							  : THRESHOLD - prep_pairs - LATE_LIMIT;
+			/* A slice only if the slowest one seen still fits. */
+			int32_t limit = prepared ? (int32_t)(g.thr + g.late / 2U)
+						 : (int32_t)g.thr - (int32_t)(prep_pairs + g.late);
 
-				if (written + sl_pairs < limit) {
-					uint32_t t0 = ccount(), dt;
-					uint32_t left = rs.q[0].count - rs.q[0].pos;
+			if (rs.q_len != 0U &&
+			    (int32_t)(written + rs.slice_cost / cpp + 256U) < limit) {
+				uint32_t t0 = ccount(), dt;
+				uint32_t left = rs.q[0].count - rs.q[0].pos;
 
-					fir_slice(SLICE_PAIRS);
-					dt = ccount() - t0;
-					rs.fir_cycles += dt;
-					rs.fir_pairs += MIN(left, SLICE_PAIRS);
-					rs.slice_cost = MAX(rs.slice_cost, dt);
-					st->slice_max = MAX(st->slice_max, dt);
-				}
+				fir_slice(g.slice);
+				dt = ccount() - t0;
+				rs.fir_cycles += dt;
+				rs.fir_pairs += MIN(left, g.slice);
+				rs.slice_cost = MAX(rs.slice_cost, dt);
+				st->slice_max = MAX(st->slice_max, dt);
+				continue;
+			}
+			if (rs.burst_ok && !armed && atomic_get(&burst_state) != BURST_IDLE) {
+				armed = burst_pickup(index, &gen_pos);
+			}
+			if (armed && gen_pos < burst.words &&
+			    (int32_t)(written + rs.gen_cost / cpp + 64U) < limit) {
+				uint32_t t0 = ccount();
+
+				(void)gen_slice(&gen_pos, GEN_SLICE);
+				rs.gen_cost = MAX(rs.gen_cost, ccount() - t0);
 			}
 		}
 		if (st->status != ESP_SDR_RING_OK) {
 			break;
 		}
-		late = written - THRESHOLD;
+		late = written - g.thr;
 		st->late_max = MAX(st->late_max, late);
-		if (late > LATE_LIMIT) {
+		if (late > g.late) {
 			fail(ESP_SDR_RING_LATE, written);
 			break;
 		}
+		/* An armed burst whose frame ends in this unit stops it; a cancelled one is dropped. */
+		if (armed) {
+			if (atomic_get(&burst_state) == BURST_CANCEL) {
+				armed = false;
+				bst.cancelled++;
+				atomic_set(&burst_state, BURST_IDLE);
+			} else {
+				burst_stop = index + written >= burst.end_pair;
+			}
+		}
 
 		/* 2. Stop or switch. */
-		if (stop) {
+		if (stop || burst_stop) {
 			REG_WRITE(DUMP_CTRL_REG, ctrl);
 			select_bank(saved, 0);
 		} else {
+			if (nbanks < RING_BANKS) {
+				/* Two banks: the unit before must be done before the engine takes its bank. */
+				release_bank(next);
+			}
 			select_bank(saved, BIT(next));
 			epoch = ccount();
 		}
@@ -970,14 +1288,14 @@ HOT static void ring_loop(void)
 		}
 
 		/* 3. Locate the finished unit exactly. */
-		if (unit == 0U) {
-			first = find_first(b, (w0 - 1024U) & RING_MASK, 3072U);
-			end = find_end(b, wi, wi, UNIT0_END_GUARD);
+		if (fresh) {
+			first = find_first(b, (w0 - 1024U) & RING_MASK, g.sg0);
+			end = find_end(b, wi, wi, UNIT0_END_WIN);
 		} else {
-			first = find_first(b, start_probe[b], START_GUARD);
-			end = find_end(b, end_probe[b], wi, END_GUARD);
+			first = find_first(b, start_probe[b], g.sg);
+			end = find_end(b, end_probe[b], wi, g.eg);
 		}
-		if (first == NOT_FOUND || (unit != 0U && first != expected)) {
+		if (first == NOT_FOUND || (!fresh && first != expected)) {
 			fail(ESP_SDR_RING_START, (first & 0xffffU) | (expected << 16));
 			break;
 		}
@@ -986,7 +1304,7 @@ HOT static void ring_loop(void)
 			break;
 		}
 		count = (end - first) & RING_MASK;
-		if (count < (unit != 0U ? MIN_PAIRS : MIN_PAIRS - 1024U) || count > MAX_PAIRS) {
+		if (count < (!fresh ? g.thr : g.min0) || count > g.thr + g.late + 64U) {
 			fail(ESP_SDR_RING_LENGTH, count);
 			break;
 		}
@@ -996,6 +1314,30 @@ HOT static void ring_loop(void)
 		expected = end;
 		b = next;
 		prepared = false;
+		fresh = false;
+		if (burst_stop) {
+			/* The engine stopped at pair index, at cycle t. */
+			uint32_t t_go;
+
+			bst.stop_last_pairs = (int32_t)(index - burst.end_pair);
+			atomic_set(&now_ref.seq, 0);
+			burst_run(cpp, saved, index, t, &gen_pos);
+			armed = false;
+			atomic_set(&burst_state, BURST_IDLE);
+			if (stop) {
+				break;
+			}
+			engine_start(ctrl, saved, &epoch, &w0);
+			t_go = ccount();
+			/* The pair index keeps counting real time across the gap. */
+			index += (t_go - t) / cpp;
+			bst.rx_back_last_pairs = (int32_t)(index - burst.end_pair);
+			expected = (w0 - 256U) & RING_MASK;
+			b = 0;
+			fresh = true;
+			continue;
+		}
+		now_publish(index, end);
 		if (stop) {
 			break;
 		}
@@ -1006,8 +1348,13 @@ HOT static void ring_loop(void)
 	}
 
 	/* Engine stopped (normally or by a failure): all banks are the CPU's. */
+	atomic_set(&now_ref.seq, 0);
 	REG_WRITE(DUMP_CTRL_REG, 0);
 	REG_WRITE(SENSITIVE_INTERNAL_SRAM_USAGE_3_REG, saved);
+	if (atomic_get(&burst_state) != BURST_IDLE) {
+		bst.cancelled++;
+		atomic_set(&burst_state, BURST_IDLE);
+	}
 	st->elapsed_us = k_cyc_to_us_floor64(k_cycle_get_64() - t_start);
 	st->pairs = index;
 	while (fir_slice(4096U)) {
@@ -1016,6 +1363,7 @@ HOT static void ring_loop(void)
 
 int esp_sdr_ring_run(const struct esp_sdr_ring_cfg *cfg, struct esp_sdr_ring_stats *stats)
 {
+	struct geom g_check;
 	unsigned int d = cfg->decim, l = 0, key;
 	int ret = 0;
 
@@ -1025,7 +1373,8 @@ int esp_sdr_ring_run(const struct esp_sdr_ring_cfg *cfg, struct esp_sdr_ring_sta
 	if ((d < ESP_SDR_RING_DECIM_MIN &&
 	     !(IS_ENABLED(CONFIG_ESP_SDR_RING_BOX4) && d == ESP_SDR_RING_DECIM_BOX4)) ||
 	    d > ESP_SDR_RING_DECIM_MAX || (1U << l) != d ||
-	    cfg->sink == NULL) {
+	    cfg->sink == NULL || geom_init(&g_check, cfg->unit_pairs) != 0 ||
+	    (cfg->spare_bank && !geom_two_banks(&g_check))) {
 		return -EINVAL;
 	}
 	if ((uintptr_t)__esp_sdr_bank0_start != DUMP_BANK0_ADDR) {
@@ -1039,11 +1388,17 @@ int esp_sdr_ring_run(const struct esp_sdr_ring_cfg *cfg, struct esp_sdr_ring_sta
 	}
 	memset(stats, 0, sizeof(*stats));
 	memset(&rs, 0, sizeof(rs));
+	(void)geom_init(&rs.g, cfg->unit_pairs);
+	rs.nbanks = cfg->spare_bank ? RING_BANKS - 1U : RING_BANKS;
+	rs.burst_ok = cfg->spare_bank;
+	memset(&bst, 0, sizeof(bst));
+	rs.gen_cost = 2000U;
 	rs.cfg = cfg;
 	rs.st = stats;
 	rs.log2d = l;
 	rs.next_pair = ~0ULL;
-	rs.slice_cost = 8000U;
+	/* About 8 cycles per pair until the slices have been timed. */
+	rs.slice_cost = 8U * rs.g.slice;
 	fir_rot = cfg->shift_fs4;
 	fir_setup(d);
 	atomic_set(&stop_req, 0);
@@ -1091,6 +1446,8 @@ int esp_sdr_ring_bench(const struct esp_sdr_ring_cfg *cfg, unsigned int units,
 		p[k] = x & 0xfffffU;
 	}
 	memset(&rs, 0, sizeof(rs));
+	(void)geom_init(&rs.g, 0);
+	rs.nbanks = RING_BANKS;
 	rs.cfg = cfg;
 	rs.st = &st;
 	rs.log2d = l;
@@ -1103,7 +1460,7 @@ int esp_sdr_ring_bench(const struct esp_sdr_ring_cfg *cfg, unsigned int units,
 	prof = true;
 	t0 = ccount();
 	for (unsigned int u = 0; u < units; u++) {
-		unit_accept(0, (u * THRESHOLD) & RING_MASK, THRESHOLD, (uint64_t)u * THRESHOLD);
+		unit_accept(0, (u * rs.g.thr) & RING_MASK, rs.g.thr, (uint64_t)u * rs.g.thr);
 		while (fir_slice(SLICE_PAIRS)) {
 		}
 	}
@@ -1112,7 +1469,7 @@ int esp_sdr_ring_bench(const struct esp_sdr_ring_cfg *cfg, unsigned int units,
 	arch_irq_unlock(key);
 	k_mutex_unlock(&esp_sdr_lock);
 
-	res->pairs = units * THRESHOLD;
+	res->pairs = units * rs.g.thr;
 	res->cycles_x100 = (uint32_t)((uint64_t)total * 100U / res->pairs);
 	for (int k = 0; k < 4; k++) {
 		res->stage_x100[k] = (uint32_t)((uint64_t)prof_cyc[k] * 100U / res->pairs);

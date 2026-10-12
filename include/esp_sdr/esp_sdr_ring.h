@@ -77,7 +77,26 @@ struct esp_sdr_ring_cfg {
 	 * noise; the LO leakage folds onto 0 Hz as a constant offset.
 	 */
 	bool subsample;
+	/**
+	 * Unit length in ring pairs (0: ESP_SDR_RING_UNIT_DEFAULT): how often
+	 * the engine changes banks, and so how long after a pair arrives the
+	 * sink gets it at the latest (unit length plus the filter's lag).
+	 * Shorter units cost more per pair. A multiple of 64 from
+	 * ESP_SDR_RING_UNIT_MIN.
+	 */
+	uint32_t unit_pairs;
+	/**
+	 * Rotate through banks 0 and 1 only and keep bank 2 for bursts
+	 * (esp_sdr_ring_burst_arm()). Needs a unit length of at most about
+	 * 3000 pairs (-EINVAL otherwise).
+	 */
+	bool spare_bank;
 };
+
+/** Default unit length: 768 us at 16 MS/s. */
+#define ESP_SDR_RING_UNIT_DEFAULT 12288U
+/** Shortest unit: 64 us. */
+#define ESP_SDR_RING_UNIT_MIN     1024U
 
 /** Why a run ended early. */
 enum esp_sdr_ring_status {
@@ -164,6 +183,90 @@ void esp_sdr_ring_stop(void);
 
 /** @return Whether esp_sdr_ring_run() is running. */
 bool esp_sdr_ring_active(void);
+
+/**
+ * @brief The running ring's position, from any CPU.
+ *
+ * @param pair The index of the pair the engine writes now, counted from the
+ *             run's first pair (output sample k of a decimating run is pair
+ *             k times the decimation).
+ * @return false outside a run, before its first unit has been located, or
+ *         if the position kept changing while read.
+ */
+bool esp_sdr_ring_now(uint64_t *pair);
+
+/**
+ * @defgroup esp_sdr_ring_burst Bursts inside a run
+ *
+ * A run with esp_sdr_ring_cfg::spare_bank can interrupt its capture for one
+ * transmitted burst (an 802.15.4 ACK) from bank 2: armed with the pair at
+ * which a received frame ends, the run stops the capture at the first unit
+ * boundary at or after it, hands the last unit to the sink, turns the front
+ * end to TX and waits; fired, it plays the bank once at 40 MS/s from the
+ * given pair on; then it turns back to RX and restarts the capture (the
+ * output index jumps over the gap, the pair index keeps counting real
+ * time). All pairs are on the run's pair index (esp_sdr_ring_now()).
+ * @{
+ */
+
+/** Writes DAC words [index, index + n) of the burst to dst (esp_sdr_tx_word()). */
+typedef void (*esp_sdr_ring_gen_t)(void *user, uint32_t *dst, uint64_t index, uint32_t n);
+
+/**
+ * @brief The burst bank, the CPUs' to write while no burst is armed and
+ * outside its waveform's [from, words) once armed.
+ */
+uint32_t *esp_sdr_ring_burst_buf(size_t *words);
+
+/**
+ * @brief Arm a burst (from another CPU than the run's).
+ *
+ * @param end_pair The capture runs at least until this pair.
+ * @param limit_pair Without a fire by this pair the burst is dropped, and a
+ *                   fire seen later is skipped.
+ * @param gen Builds words [from, words) of the bank between polls before the
+ *            stop, and the rest after it; words below @p from are kept.
+ * @return 0, -EINVAL, or -EBUSY when no run with a spare bank is active or
+ *         a burst is armed already.
+ */
+int esp_sdr_ring_burst_arm(uint64_t end_pair, uint64_t limit_pair, esp_sdr_ring_gen_t gen,
+			   void *user, uint32_t from, uint32_t words);
+
+/**
+ * @brief Play the armed burst with its first sample at @p at_pair (at once
+ * if that has passed). @return false if no burst was armed (dropped).
+ */
+bool esp_sdr_ring_burst_fire(uint64_t at_pair);
+
+/** @brief Drop the armed burst; the capture goes on or restarts. */
+void esp_sdr_ring_burst_cancel(void);
+
+/** @return Whether a burst is armed or running. */
+bool esp_sdr_ring_burst_busy(void);
+
+/** Burst counters of the running or last run; positions in pairs after the burst's end pair. */
+struct esp_sdr_ring_burst_stats {
+	uint32_t fired, cancelled, timeouts, skipped;
+	/** Fired more than 2 us after the fire pair; of those, with the front end the later one. */
+	uint32_t late, late_tx;
+	/** Armed after the unit holding the end pair had been switched away. */
+	uint32_t arm_late;
+	/** Where the first sample went out: last, min, max. */
+	int32_t fire_last_pairs, fire_min_pairs, fire_max_pairs;
+	/** Last burst: capture stopped, front end in TX, fire seen, capture restarted. */
+	int32_t stop_last_pairs, ready_last_pairs, seen_last_pairs, rx_back_last_pairs;
+	/** Last burst's DAC pass in CPU cycles (0: no done flag). */
+	uint32_t dac_last_cyc;
+	/** Latest front end ready and fire seen; longest pass through the wait's poll (cycles). */
+	int32_t ready_max_pairs, seen_max_pairs;
+	uint32_t window_max_cyc;
+	/** Most waveform words still to build at a stop. */
+	uint32_t gen_left_max;
+};
+
+void esp_sdr_ring_burst_get_stats(struct esp_sdr_ring_burst_stats *stats);
+
+/** @} */
 
 /** @} */
 

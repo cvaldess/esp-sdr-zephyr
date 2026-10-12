@@ -35,6 +35,9 @@
 #if defined(CONFIG_ESP_SDR_RING)
 #include <esp_sdr/esp_sdr_ring.h>
 #endif
+#if defined(CONFIG_IEEE802154_ESP32)
+#include <esp_ieee802154.h>
+#endif
 #if defined(CONFIG_ESP_SDR_IEEE802154)
 #include <esp_sdr/ieee154_esp_sdr.h>
 #include <esp_sdr/ieee154_phy.h>
@@ -405,7 +408,7 @@ static int set_promisc(const struct shell *sh, const char *value)
 	return ret;
 }
 
-/* PAN ID and short address go to the radio's filter together (auto-ACK on the C6). */
+/* PAN ID and short address go to the radio's filter together (what auto-ACK answers). */
 static int apply_addr(void)
 {
 	struct ieee802154_filter f = {.pan_id = pan_id};
@@ -498,6 +501,36 @@ static int set_lo(const struct shell *sh, const char *value)
 	}
 	return ret;
 }
+
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+/* ack <delay us>[,<limit us>] */
+static int set_ack(const struct shell *sh, const char *value)
+{
+	char *end;
+	long delay = strtol(value, &end, 0), limit = 512;
+
+	if (*end == ',') {
+		limit = strtol(end + 1, &end, 0);
+	}
+	if (*end != '\0' || delay < 0 || limit < 0) {
+		shell_error(sh, "ack: <delay us>[,<limit us>]");
+		return -EINVAL;
+	}
+	return ieee154_esp_sdr_set_ack_timing((uint32_t)delay, (uint32_t)limit);
+}
+#endif
+
+#if defined(CONFIG_ESP_SDR_IEEE802154_RING)
+static int set_unit(const struct shell *sh, const char *value)
+{
+	long pairs;
+
+	if (parse_long(sh, value, 0, 12288, &pairs) != 0) {
+		return -EINVAL;
+	}
+	return ieee154_esp_sdr_set_ring_unit((uint32_t)pairs);
+}
+#endif
 #endif
 
 static const struct setting {
@@ -515,6 +548,13 @@ static const struct setting {
 	{"rxinvert", "0|1: conjugate the received samples", set_rxinvert},
 	{"txinvert", "0|1: conjugate the transmitted waveform", set_txinvert},
 	{"lo", "below|above the channel (diagnostic)", set_lo},
+#endif
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+	{"ack", "<delay us>[,<limit us>]: ACK start after the frame (192,512)", set_ack},
+#endif
+#if defined(CONFIG_ESP_SDR_IEEE802154_RING)
+	{"unit", "<pairs>: ring unit length, 1024..12288 in steps of 64 (0: default, 1024)",
+	 set_unit},
 #endif
 };
 
@@ -652,7 +692,41 @@ static void print_sdr_status(const struct shell *sh)
 	shell_print(sh, "ring last run: %u.%02u cycles/pair, slice max %u cycles, abandoned %u",
 		    s.ring_cycles_x100 / 100U, s.ring_cycles_x100 % 100U, s.ring_slice_max,
 		    s.ring_abandoned);
-	shell_print(sh, "ring irq windows %u, lines 0x%08x", s.ring_irq_windows, s.ring_irq_lines);
+	shell_print(sh, "ring irq windows %u, lines 0x%08x, late max %u pairs", s.ring_irq_windows,
+		    s.ring_irq_lines, s.ring_late_max);
+	shell_print(sh, "verdict after frame end: %u frames, min %u avg %u max %u us", s.verdict_n,
+		    s.verdict_min_us, s.verdict_n ? s.verdict_sum_us / s.verdict_n : 0U,
+		    s.verdict_max_us);
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+	{
+		struct esp_sdr_ring_burst_stats b;
+
+		esp_sdr_ring_burst_get_stats(&b);
+		shell_print(sh,
+			    "acks due %u fired %u arm failed %u fire failed %u cancelled %u"
+			    " no dst %u",
+			    s.ack_due, s.ack_fired, s.ack_arm_failed, s.ack_fire_failed,
+			    s.ack_cancelled, s.ack_unsupported);
+		shell_print(sh, "ack verdict after frame end: avg %u max %u us, %u late;"
+			    " phy behind at the arm max %u us",
+			    s.ack_fired ? s.ack_verdict_sum_us / s.ack_fired : 0U,
+			    s.ack_verdict_max_us, s.ack_verdict_late, s.ack_lag_max_us);
+		/* Ring pairs are 1/16 us. */
+		shell_print(sh,
+			    "bursts fired %u (late %u, front end %u) cancelled %u timeouts %u"
+			    " skipped %u arm late %u; start after frame end min %d max %d last %d us",
+			    b.fired, b.late, b.late_tx, b.cancelled, b.timeouts, b.skipped, b.arm_late,
+			    b.fire_min_pairs / 16, b.fire_max_pairs / 16, b.fire_last_pairs / 16);
+		shell_print(sh, "last burst after frame end: stop %d, tx ready %d, fire seen %d,"
+			    " rx again %d us; dac pass %u cycles", b.stop_last_pairs / 16,
+			    b.ready_last_pairs / 16, b.seen_last_pairs / 16,
+			    b.rx_back_last_pairs / 16, b.dac_last_cyc);
+		shell_print(sh, "bursts: tx ready max %d us, fire seen max %d us, wait poll max %u cycles,"
+			    " waveform left at the stop max %u words",
+			    b.ready_max_pairs / 16, b.seen_max_pairs / 16, b.window_max_cyc,
+			    b.gen_left_max);
+	}
+#endif
 	shell_print(sh, "acks %u, no ack %u, last tx error %d", s.acks, s.no_acks, s.tx_last_err);
 	shell_print(sh,
 		    "dac: switches %u errors %u restarts %u slack min %d us fill max %u us"
@@ -697,6 +771,10 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	}
 	shell_print(sh, "tx sent %u ok %u noack %u busy %u err %u%s", txr.sent, txr.ok, txr.noack,
 		    txr.busy, txr.err, atomic_get(&tx_running) ? " (running)" : "");
+#if defined(CONFIG_IEEE802154_ESP32)
+	/* How long the native radio waits for an ACK (hardware register, 16 us units). */
+	shell_print(sh, "ack timeout %u us", (unsigned int)esp_ieee802154_get_ack_timeout());
+#endif
 #if defined(CONFIG_ESP_SDR_IEEE802154)
 	print_sdr_status(sh);
 #endif
@@ -710,6 +788,9 @@ static int cmd_clear(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 	rx_reset();
+#if defined(CONFIG_ESP_SDR_IEEE802154)
+	ieee154_esp_sdr_clear_stats();
+#endif
 	return 0;
 }
 
@@ -805,10 +886,31 @@ static int cmd_bench(const struct shell *sh, size_t argc, char **argv)
 	struct esp_sdr_ring_bench_result r;
 	int ret;
 
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+	if (argc > 1 && strcmp(argv[1], "acktx") == 0) {
+		/* Not a bench: one ACK on the air while receiving (wpan on). */
+		ret = ieee154_esp_sdr_ack_test(argc > 2 ? (uint8_t)atoi(argv[2]) : 0x5aU);
+		shell_print(sh, "acktx: %d", ret);
+		return ret;
+	}
+#endif
 	if (radio_on || atomic_get(&tx_running)) {
 		shell_error(sh, "wpan off and tx stopped first");
 		return -EBUSY;
 	}
+#if defined(CONFIG_ESP_SDR_IEEE802154)
+	if (argc > 1 && strcmp(argv[1], "ack") == 0) {
+		struct ieee154_esp_sdr_bench b = {0};
+
+		ret = ieee154_esp_sdr_bench(&b);
+		shell_print(sh,
+			    "ack %d: %u words, chips %u cycles, words %u cycles (from slot 416: %u)",
+			    ret, b.ack_words, b.ack_build_cyc, b.ack_gen_cyc, b.ack_tail_cyc);
+		shell_print(sh, "front end: to tx %u us, to rx %u us (settle times included)",
+			    b.to_tx_us, b.to_rx_us);
+		return ret;
+	}
+#endif
 	if (argc > 1 && strcmp(argv[1], "phy") == 0) {
 		/*
 		 * The PHY alone on noise-like samples (hunting, the common case),
@@ -908,7 +1010,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(wpan_cmds,
 	SHELL_CMD(dump, NULL, "One 1 ms capture as base64 I/Q (tools/iq_dump.py)", cmd_dump),
 #endif
 #if defined(CONFIG_ESP_SDR_RING)
-	SHELL_CMD_ARG(bench, NULL, "[units] [subsample] | phy: ring decimation by 4 or the PHY",
+	SHELL_CMD_ARG(bench, NULL,
+		      "[units] [subsample] | phy | ack: ring decimation by 4, the PHY, or the ACK"
+		      " waveform and front end",
 		      cmd_bench, 1, 2),
 #endif
 #if defined(CONFIG_SYS_HEAP_RUNTIME_STATS)

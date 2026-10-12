@@ -325,6 +325,8 @@ void esp_sdr_rx_prepare(void);
 bool esp_sdr_rx_gain_refresh(void);
 void esp_sdr_rx_resume(void);
 void esp_sdr_tx_prepare(void);
+/* esp_sdr_tx_prepare() without the settle time. */
+void esp_sdr_tx_front_end(void);
 
 /* Take the receiver lock and switch the front end to TX at the current step. */
 int esp_sdr_dac_begin(enum esp_sdr_rate rate);

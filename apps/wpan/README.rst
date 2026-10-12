@@ -29,10 +29,12 @@ Shell
    wpan set [<key> <value> ...]  settings, several at once; without arguments the keys:
                                  chan 11..26 (2405 + 5 (n - 11) MHz), txpower <dBm>,
                                  promisc 0|1, pan <PAN ID>, addr <short> (auto-ACK on
-                                 the C6), print 0|1|2 (nothing, a line, a line and a hex
+                                 both radios), print 0|1|2 (nothing, a line, a line and a hex
                                  dump per frame); on the S3 also rxgain auto|<index>,
-                                 rxinvert 0|1, txinvert 0|1, lo below|above
-   wpan clear                    zero the receive counters
+                                 rxinvert 0|1, txinvert 0|1, lo below|above,
+                                 unit <pairs> (ring unit length, default 1024),
+                                 ack <delay us>[,<limit us>] (ACK timing, 192,512)
+   wpan clear                    zero the receive and driver counters
    wpan on | off                 start or stop receiving (the S3 software radio starts off)
    wpan tx <count|0> [ms] [payload] [dst] [ack] [csma]
                                  send test frames (0: until wpan stop)
@@ -41,8 +43,11 @@ Shell
    wpan dump                     one 1 ms capture as base64 I/Q, for tools/iq_dump.py (S3)
    wpan crash                    reset cause, driver event trail, stalled CPU 0, last crash (S3)
    wpan mem                      system heap use (with CONFIG_SYS_HEAP_RUNTIME_STATS)
-   wpan bench [units] [subsample]|phy
-                                 ring decimation by 4 and PHY cost on synthetic data (S3, radio off)
+   wpan bench acktx [seq]        one ACK on the air now (S3, receiving)
+   wpan bench [units] [subsample]|phy|ack
+                                 ring decimation by 4 and PHY cost on synthetic data, or the
+                                 ACK waveform build and front end switch times (S3, radio off
+                                 after one wpan on)
 
 The shells of the other apps follow the same pattern: ``status``, ``set <key>
 <value> ...``, ``clear``, and verbs for actions.

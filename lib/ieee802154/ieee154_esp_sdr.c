@@ -14,7 +14,8 @@
  * templates and played gapless by the DAC backend.
  *
  * Frames that ask for an ACK wait for it (one capture after the frame);
- * sending ACKs, address filtering, CCA and energy detection are not done.
+ * frames to this node that ask for one get it from inside the ring run
+ * (CONFIG_ESP_SDR_IEEE802154_AUTO_ACK). CCA and energy detection are not done.
  */
 
 #include <errno.h>
@@ -28,6 +29,7 @@
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_pkt.h>
 #include <zephyr/drivers/hwinfo.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
 
 #include <esp_attr.h>
@@ -133,6 +135,13 @@ struct sdr154_data {
 };
 
 static struct sdr154_data sdr154;
+
+/* Address filter (filter(), configure()): what an ACK is due for. */
+static struct {
+	uint16_t pan_id, short_addr;
+	uint8_t ext_addr[8];
+	bool pan_coord, promisc;
+} addr = {.pan_id = 0xffffU, .short_addr = 0xfffeU};
 
 /*
  * Breadcrumbs in RTC memory, which a reset keeps: the last driver state
@@ -271,11 +280,24 @@ static int tune(struct sdr154_data *d)
 					      : channel_mhz(d->channel) - LO_OFFSET_MHZ);
 }
 
+#if defined(CONFIG_ESP_SDR_IEEE802154_RING)
+static void verdict_latency(struct sdr154_data *d);
+#endif
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+static void ack_verdict(struct sdr154_data *d);
+#endif
+
 static void on_frame(const uint8_t *psdu, uint8_t len, int lqi, void *user)
 {
 	struct sdr154_data *d = user;
 	struct net_pkt *pkt;
 
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+	ack_verdict(d);
+#endif
+#if defined(CONFIG_ESP_SDR_IEEE802154_RING)
+	verdict_latency(d);
+#endif
 	/* Imm-ACK: frame type 2, 5 bytes with the FCS. */
 	if (len == 5U && (psdu[0] & 0x7U) == 2U) {
 		if (ack_seq >= 0 && psdu[2] == (uint8_t)ack_seq) {
@@ -422,13 +444,298 @@ static IRAM_ATTR void ring_sink(void *user, const int16_t *i, const int16_t *q, 
 	atomic_set(&sring_w, (atomic_val_t)sink_next);
 }
 
-static const struct esp_sdr_ring_cfg ring_cfg = {
+static struct esp_sdr_ring_cfg ring_cfg = {
 	.decim = ESP_SDR_RING_DECIM_BOX4,
 	.shift_fs4 = true,
 	.sink = ring_sink,
 	/* Summing four costs about 14 cycles per pair, over budget at 16 MS/s with the sink. */
 	.subsample = true,
+	/*
+	 * 64 us units: the PHY decides a frame about 100 us after its end
+	 * (768 us units: about 900), and a unit (256 samples) never comes
+	 * near the size of the sample ring.
+	 */
+	.unit_pairs = ESP_SDR_RING_UNIT_MIN,
+	/* Bank 2 holds the ACK waveform. */
+	.spare_bank = IS_ENABLED(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK),
 };
+
+/* The sample ring index and the PHY's sample count where the block being fed starts. */
+static uint32_t blk_r, blk_pos;
+
+/*
+ * In the frame callback: how long after the frame's last sample was on the
+ * air the PHY decided it, from the ring's live position (pair 4 k is output
+ * sample k). Receive chain delays not included.
+ */
+static void verdict_latency(struct sdr154_data *d)
+{
+	uint32_t end = blk_r + (ieee154_phy_rx_position() - blk_pos);
+	uint64_t pair;
+	uint32_t us;
+
+	if (!esp_sdr_ring_now(&pair)) {
+		return;
+	}
+	us = ((uint32_t)(pair / 4U) - end) / 4U;
+	STATS_UPDATE({
+		d->stats.verdict_n++;
+		d->stats.verdict_sum_us += us;
+		d->stats.verdict_min_us = d->stats.verdict_n == 1U ? us
+				       : MIN(d->stats.verdict_min_us, us);
+		d->stats.verdict_max_us = MAX(d->stats.verdict_max_us, us);
+	});
+}
+
+int ieee154_esp_sdr_set_ring_unit(uint32_t pairs)
+{
+	struct esp_sdr_ring_cfg cfg = ring_cfg;
+
+	cfg.unit_pairs = pairs != 0U ? pairs : ESP_SDR_RING_UNIT_MIN;
+	if (pairs != 0U && (pairs < ESP_SDR_RING_UNIT_MIN || pairs > ESP_SDR_RING_UNIT_DEFAULT ||
+			    pairs % 64U != 0U)) {
+		return -EINVAL;
+	}
+	radio_take(&sdr154);
+	ring_cfg = cfg;
+	radio_give(&sdr154);
+	return 0;
+}
+
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+/*
+ * ACKs from inside the ring run (doc/ieee802154-ack.md): the PHY's header
+ * callback decides from the addresses whether an ACK is due and arms a ring
+ * burst with the frame's end; the waveform's first 416 slots (preamble,
+ * SFD, PHR and the frame control's low nibble) are the same for every ACK
+ * and sit in the burst bank from the run's start, the rest is built by the
+ * ring between its polls. The frame callback fires it 192 us after the end,
+ * a failed FCS cancels it.
+ */
+#define ACK_PREFIX_SLOTS 416U
+#define ACK_PREFIX_WORDS (ACK_PREFIX_SLOTS * IEEE154_DSP_SLOT)
+/* 16 ring pairs per us. */
+#define PAIRS_PER_US 16U
+
+/* Start of the ACK after the frame's end; no start after the limit. */
+static uint32_t ack_delay_us = 192U;
+static uint32_t ack_limit_us = 512U;
+
+/* The armed ACK (PHY thread only): the frame's end in PHY samples and ring pairs. */
+static struct {
+	bool armed, fired;
+	uint32_t end_pos;
+	uint64_t end_pair;
+	/* The ring's pair and this CPU's cycle counter at the arm, to time the verdict. */
+	uint64_t arm_pair;
+	uint32_t arm_cyc;
+} ack ESP_SDR_HIGH_RAM;
+
+static void ack_build(uint8_t seq)
+{
+	uint8_t psdu[5] = {0x02, 0x00, seq};
+
+	(void)ieee154_phy_append_fcs(psdu, 3U);
+	ieee154_dsp_tx_build(&high->tx, psdu, sizeof(psdu));
+}
+
+/* Before a run: the constant part of every ACK into the burst bank. Radio held. */
+static void ack_prefix(void)
+{
+	size_t words;
+	uint32_t *bank = esp_sdr_ring_burst_buf(&words);
+
+	ack_build(0);
+	tx_gen(NULL, bank, 0, ACK_PREFIX_WORDS);
+	ack.armed = false;
+	ack.fired = false;
+}
+
+static bool addr_is_ours(const uint8_t *p, uint8_t mode)
+{
+	if (mode == 2U) {
+		return sys_get_le16(p) == addr.short_addr;
+	}
+	return memcmp(p, addr.ext_addr, sizeof(addr.ext_addr)) == 0;
+}
+
+/* PHY thread, PHY lock held: is an ACK due for the frame coming in? */
+static bool on_header(const uint8_t *psdu, uint8_t have, uint8_t len, uint32_t end_pos,
+		      void *user)
+{
+	struct sdr154_data *d = user;
+	uint16_t fcf;
+	uint8_t type, dst_mode, need;
+	uint32_t e_out;
+	uint64_t pair, end_pair;
+	int ret;
+
+	ARG_UNUSED(len);
+	if (addr.promisc) {
+		return false;
+	}
+	if (have < 3U) {
+		return true;
+	}
+	fcf = sys_get_le16(psdu);
+	type = fcf & 0x7U;
+	dst_mode = (fcf >> 10) & 0x3U;
+	/* Data or command, AR set, frame version 2003 or 2006 (2015 wants an Enh-Ack). */
+	if ((type != 1U && type != 3U) || (fcf & BIT(5)) == 0U || ((fcf >> 12) & 0x3U) > 1U) {
+		return false;
+	}
+	if (dst_mode != 2U && dst_mode != 3U) {
+		/* No destination: for the PAN coordinator (not decided here yet). */
+		STATS_UPDATE(d->stats.ack_unsupported++);
+		return false;
+	}
+	need = 5U + (dst_mode == 2U ? 2U : 8U);
+	if (have < need) {
+		return true;
+	}
+	if (sys_get_le16(&psdu[3]) != addr.pan_id && sys_get_le16(&psdu[3]) != 0xffffU) {
+		return false;
+	}
+	if (!addr_is_ours(&psdu[5], dst_mode)) {
+		return false;
+	}
+	/* Both phase trackers may report the frame. */
+	if (ack.armed && (int32_t)(end_pos - ack.end_pos) < 8 &&
+	    (int32_t)(ack.end_pos - end_pos) < 8) {
+		return false;
+	}
+	STATS_UPDATE(d->stats.ack_due++);
+	if (!esp_sdr_ring_now(&pair)) {
+		STATS_UPDATE(d->stats.ack_arm_failed++);
+		return false;
+	}
+	/* The frame's last sample is output sample e_out - 1, pair 4 e_out - 4 on. */
+	e_out = blk_r + (end_pos - blk_pos);
+	end_pair = pair + 4 * (int64_t)(int32_t)(e_out - (uint32_t)(pair / 4U));
+	ack_build(psdu[2]);
+	ret = esp_sdr_ring_burst_arm(end_pair, end_pair + ack_limit_us * PAIRS_PER_US, tx_gen,
+				     NULL, ACK_PREFIX_WORDS,
+				     (uint32_t)ieee154_dsp_tx_samples(&high->tx));
+	if (ret != 0) {
+		STATS_UPDATE(d->stats.ack_arm_failed++);
+		return false;
+	}
+	ack.armed = true;
+	ack.fired = false;
+	ack.end_pos = end_pos;
+	ack.end_pair = end_pair;
+	ack.arm_pair = pair;
+	ack.arm_cyc = k_cycle_get_32();
+	{
+		/* How far the PHY was behind the air when the header came. */
+		int32_t lag = (int32_t)((uint32_t)(pair / 4U) - e_out) + (int32_t)(end_pos -
+				ieee154_phy_rx_position());
+
+		STATS_UPDATE(d->stats.ack_lag_max_us = MAX(d->stats.ack_lag_max_us, (uint32_t)MAX(lag, 0) / 4U));
+	}
+	/*
+	 * Until the verdict (about a unit after the frame's end) nothing on
+	 * this CPU may sit between the PHY and the last samples.
+	 */
+	k_thread_priority_set(k_current_get(), CONFIG_ESP_SDR_IEEE802154_ACK_PRIORITY);
+	return false;
+}
+
+/* Frame callback: the armed frame passed its FCS check. */
+static void ack_verdict(struct sdr154_data *d)
+{
+	uint32_t pos = ieee154_phy_rx_position();
+
+	if (!ack.armed || ack.fired || (int32_t)(pos - ack.end_pos) > 8 ||
+	    (int32_t)(ack.end_pos - pos) > 8) {
+		return;
+	}
+	ack.fired = true;
+	{
+		/* The verdict on the ring's time base, through this CPU's clock since the arm. */
+		uint64_t now = ack.arm_pair + (uint64_t)k_cyc_to_us_floor32(k_cycle_get_32() -
+									 ack.arm_cyc) * PAIRS_PER_US;
+		uint32_t us = now > ack.end_pair ? (uint32_t)(now - ack.end_pair) / PAIRS_PER_US : 0U;
+
+		STATS_UPDATE({
+			d->stats.ack_verdict_max_us = MAX(d->stats.ack_verdict_max_us, us);
+			d->stats.ack_verdict_sum_us += us;
+			if (us > ack_delay_us) {
+				d->stats.ack_verdict_late++;
+			}
+		});
+	}
+	if (esp_sdr_ring_burst_fire(ack.end_pair + ack_delay_us * PAIRS_PER_US)) {
+		STATS_UPDATE(d->stats.ack_fired++);
+	} else {
+		STATS_UPDATE(d->stats.ack_fire_failed++);
+	}
+}
+
+/* After each PHY block: an armed frame the PHY is past without a verdict failed. */
+static void ack_check(struct sdr154_data *d, uint32_t pos)
+{
+	if (!ack.armed) {
+		return;
+	}
+	if (!ack.fired && esp_sdr_ring_burst_busy()) {
+		if ((int32_t)(pos - ack.end_pos) <= 8) {
+			return;
+		}
+		esp_sdr_ring_burst_cancel();
+		STATS_UPDATE(d->stats.ack_cancelled++);
+	}
+	/* Decided: the PHY thread goes back below the system threads. */
+	ack.armed = false;
+	ack.fired = false;
+	k_thread_priority_set(k_current_get(), CONFIG_ESP_SDR_IEEE802154_PHY_PRIORITY);
+}
+
+int ieee154_esp_sdr_ack_test(uint8_t seq)
+{
+	uint64_t pair, end;
+	int ret;
+
+	k_mutex_lock(&phy_lock, K_FOREVER);
+	if (ack.armed || !esp_sdr_ring_now(&pair)) {
+		k_mutex_unlock(&phy_lock);
+		return -EBUSY;
+	}
+	/* A frame "ending" two units from now. */
+	end = pair + 2U * ESP_SDR_RING_UNIT_MIN;
+	ack_build(seq);
+	ret = esp_sdr_ring_burst_arm(end, end + ack_limit_us * PAIRS_PER_US, tx_gen, NULL,
+				     ACK_PREFIX_WORDS, (uint32_t)ieee154_dsp_tx_samples(&high->tx));
+	if (ret == 0 && !esp_sdr_ring_burst_fire(end + ack_delay_us * PAIRS_PER_US)) {
+		ret = -EIO;
+	}
+	k_mutex_unlock(&phy_lock);
+	return ret;
+}
+
+int ieee154_esp_sdr_set_ack_timing(uint32_t delay_us, uint32_t limit_us)
+{
+	if (delay_us > limit_us || limit_us > 2000U) {
+		return -EINVAL;
+	}
+	ack_delay_us = delay_us;
+	ack_limit_us = limit_us;
+	return 0;
+}
+#else
+int ieee154_esp_sdr_ack_test(uint8_t seq)
+{
+	ARG_UNUSED(seq);
+	return -ENOTSUP;
+}
+
+int ieee154_esp_sdr_set_ack_timing(uint32_t delay_us, uint32_t limit_us)
+{
+	ARG_UNUSED(delay_us);
+	ARG_UNUSED(limit_us);
+	return -ENOTSUP;
+}
+#endif /* CONFIG_ESP_SDR_IEEE802154_AUTO_ACK */
 
 /* Runs the ring while receiving and no transmission waits for the radio. */
 static void ring_thread_fn(void *p1, void *p2, void *p3)
@@ -458,6 +765,12 @@ static void ring_thread_fn(void *p1, void *p2, void *p3)
 		sring_new_gen();
 		STATS_UPDATE(d->stats.captures++);
 		crumb(IEEE154_ESP_SDR_EV_RING, 0);
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+		/* The transmit path reuses the chips and the bank between runs. */
+		k_mutex_lock(&phy_lock, K_FOREVER);
+		ack_prefix();
+		k_mutex_unlock(&phy_lock);
+#endif
 		ret = esp_sdr_ring_run(&ring_cfg, &st);
 		/* Status of a run that started; 0x7f: it could not. */
 		crumb(IEEE154_ESP_SDR_EV_RING_END, ret == 0 || ret == -EIO ? (uint32_t)st.status : 0x7fU);
@@ -472,6 +785,7 @@ static void ring_thread_fn(void *p1, void *p2, void *p3)
 				d->stats.ring_abandoned = st.abandoned;
 				d->stats.ring_irq_windows = st.irq_windows;
 				d->stats.ring_irq_lines = st.irq_lines;
+				d->stats.ring_late_max = MAX(d->stats.ring_late_max, st.late_max);
 			});
 		}
 		if (ret != 0) {
@@ -492,6 +806,9 @@ static void rx_thread_fn(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 	ieee154_phy_set_rx_cb(on_frame, d);
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+	ieee154_phy_set_hdr_cb(on_header, d);
+#endif
 
 	/* PC recording of CPU 0 for the stall catcher. */
 	REG_WRITE(ASSIST_DEBUG_CORE_0_RCD_PDEBUGENABLE_REG, 1);
@@ -538,7 +855,21 @@ static void rx_thread_fn(void *p1, void *p2, void *p3)
 			k_mutex_unlock(&phy_lock);
 		}
 		if (w == r) {
-			k_sleep(K_USEC(500));
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+			if (ack.armed) {
+				/* The verdict is due within a unit: no sleep until then. */
+				k_mutex_lock(&phy_lock, K_FOREVER);
+				ack_check(d, ieee154_phy_rx_position());
+				k_mutex_unlock(&phy_lock);
+				k_yield();
+				continue;
+			}
+#endif
+			/*
+			 * One tick: a frame's start found late leaves the PHY behind,
+			 * and at about 87 % load it catches up slowly.
+			 */
+			k_sleep(K_USEC(100));
 			continue;
 		}
 		t0 = k_cycle_get_32();
@@ -552,8 +883,13 @@ static void rx_thread_fn(void *p1, void *p2, void *p3)
 			uint32_t s = r & (SRING_SAMPLES - 1U);
 			uint32_t n = MIN(MIN(w - r, SRING_SAMPLES - s), PHY_CHUNK);
 
+			blk_r = r;
+			blk_pos = ieee154_phy_rx_position();
 			ieee154_phy_rx_block(&sring[2U * s], n);
 			r += n;
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+			ack_check(d, ieee154_phy_rx_position());
+#endif
 		}
 		k_mutex_unlock(&phy_lock);
 		/* Bounded slices: threads of the same priority get their turn. */
@@ -632,7 +968,10 @@ static enum ieee802154_hw_caps sdr154_caps(const struct device *dev)
 {
 	ARG_UNUSED(dev);
 	/* TX_RX_ACK: tx() waits for the ACK of a frame that asks for one. */
-	return IEEE802154_HW_FCS | IEEE802154_HW_PROMISC | IEEE802154_HW_TX_RX_ACK;
+	return IEEE802154_HW_FCS | IEEE802154_HW_PROMISC | IEEE802154_HW_TX_RX_ACK |
+	       (IS_ENABLED(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+			? IEEE802154_HW_RX_TX_ACK | IEEE802154_HW_FILTER
+			: 0);
 }
 
 static int sdr154_cca(const struct device *dev)
@@ -667,10 +1006,23 @@ static int sdr154_filter(const struct device *dev, bool set, enum ieee802154_fil
 			 const struct ieee802154_filter *filter)
 {
 	ARG_UNUSED(dev);
-	ARG_UNUSED(set);
-	ARG_UNUSED(type);
-	ARG_UNUSED(filter);
-	return -ENOTSUP;
+	if (!set) {
+		return -ENOTSUP;
+	}
+	switch (type) {
+	case IEEE802154_FILTER_TYPE_PAN_ID:
+		addr.pan_id = filter->pan_id;
+		return 0;
+	case IEEE802154_FILTER_TYPE_SHORT_ADDR:
+		addr.short_addr = filter->short_addr;
+		return 0;
+	case IEEE802154_FILTER_TYPE_IEEE_ADDR:
+		/* Little endian, as in the frame. */
+		memcpy(addr.ext_addr, filter->ieee_addr, sizeof(addr.ext_addr));
+		return 0;
+	default:
+		return -ENOTSUP;
+	}
 }
 
 /* Strongest step taken as +20 dBm; the vendor ladder is in quarter dB (4.24 per dB measured). */
@@ -822,9 +1174,17 @@ static int sdr154_configure(const struct device *dev, enum ieee802154_config_typ
 			    const struct ieee802154_config *config)
 {
 	ARG_UNUSED(dev);
-	ARG_UNUSED(config);
-	/* Every frame with a good FCS goes up: promiscuous either way. */
-	return type == IEEE802154_CONFIG_PROMISCUOUS ? 0 : -ENOTSUP;
+	switch (type) {
+	case IEEE802154_CONFIG_PROMISCUOUS:
+		/* Every frame with a good FCS goes up either way; promiscuous: no ACKs. */
+		addr.promisc = config->promiscuous;
+		return 0;
+	case IEEE802154_CONFIG_PAN_COORDINATOR:
+		addr.pan_coord = config->pan_coordinator;
+		return 0;
+	default:
+		return -ENOTSUP;
+	}
 }
 
 static int sdr154_attr_get(const struct device *dev, enum ieee802154_attr attr,
@@ -945,6 +1305,69 @@ void ieee154_esp_sdr_get_stats(struct ieee154_esp_sdr_stats *stats)
 	k_spin_unlock(&stats_lock, key);
 }
 
+int ieee154_esp_sdr_bench(struct ieee154_esp_sdr_bench *b)
+{
+	struct sdr154_data *d = &sdr154;
+	/* An Imm-Ack with frame pending clear, its FCS appended below. */
+	uint8_t ack[5] = {0x02, 0x00, 0x5a};
+	uint32_t *bank, t0, t1;
+	size_t words;
+	uint32_t n;
+	int ret;
+
+	radio_take(d);
+	if (!d->sdr_up) {
+		radio_give(d);
+		return -ENETDOWN;
+	}
+	(void)ieee154_phy_append_fcs(ack, 3U);
+	/* The capture bank: the CPUs' while the radio is held and nothing plays. */
+	bank = esp_sdr_tx_loop_buf(0, &words);
+	t0 = k_cycle_get_32();
+	ieee154_dsp_tx_build(&high->tx, ack, sizeof(ack));
+	t1 = k_cycle_get_32();
+	b->ack_build_cyc = t1 - t0;
+	n = (uint32_t)ieee154_dsp_tx_samples(&high->tx);
+	b->ack_words = n;
+	if (n > words) {
+		radio_give(d);
+		return -ENOMEM;
+	}
+	t0 = k_cycle_get_32();
+	tx_gen(NULL, bank, 0, n);
+	t1 = k_cycle_get_32();
+	b->ack_gen_cyc = t1 - t0;
+	/* What changes between ACKs: from the frame control's high nibble (slot 416) on. */
+	t0 = k_cycle_get_32();
+	tx_gen(NULL, bank + 416U * IEEE154_DSP_SLOT, 416U * IEEE154_DSP_SLOT,
+	       n - 416U * IEEE154_DSP_SLOT);
+	t1 = k_cycle_get_32();
+	b->ack_tail_cyc = t1 - t0;
+
+	/* Front end: RX to TX and back (a loop session without playback). */
+	t0 = k_cycle_get_32();
+	ret = esp_sdr_tx_loop_begin(ESP_SDR_RATE_40MSPS);
+	t1 = k_cycle_get_32();
+	if (ret == 0) {
+		b->to_tx_us = k_cyc_to_us_floor32(t1 - t0);
+		t0 = k_cycle_get_32();
+		esp_sdr_tx_loop_end();
+		t1 = k_cycle_get_32();
+		b->to_rx_us = k_cyc_to_us_floor32(t1 - t0);
+	}
+
+	radio_give(d);
+	return ret;
+}
+
+void ieee154_esp_sdr_clear_stats(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&stats_lock);
+
+	memset(&sdr154.stats, 0, sizeof(sdr154.stats));
+	k_spin_unlock(&stats_lock, key);
+}
+
 #if defined(CONFIG_NET_L2_IEEE802154)
 static void sdr154_iface_init(struct net_if *iface)
 {
@@ -980,6 +1403,9 @@ static int sdr154_init(const struct device *dev)
 	__ASSERT_NO_MSG(IS_ALIGNED(high, __alignof__(*high)));
 #endif
 	crumb(IEEE154_ESP_SDR_EV_BOOT, 0);
+#if defined(CONFIG_ESP_SDR_IEEE802154_AUTO_ACK)
+	memset(&ack, 0, sizeof(ack));
+#endif
 	ieee154_phy_init();
 	tmpl_init();
 	k_sem_init(&d->run_sem, 0, 1);

@@ -105,13 +105,27 @@ enum { ST_HUNT, ST_PREAMBLE, ST_SFD2, ST_PHR, ST_PSDU };
 struct trk {
 	uint32_t win, nchip, anchor;
 	uint8_t run, st, nib_have, nib_lo, len, pos;
+	/* The header callback still wants bytes of this frame. */
+	uint8_t hdr_want;
 	uint16_t err_sum, nsym;
+	/* Sample count at which the frame's last symbol will be decided. */
+	uint32_t end_pos;
 	uint8_t buf[MAX_PSDU];
 };
 
 static struct trk g_trk[2]; /* one tracker per sampling phase */
 static ieee154_phy_frame_cb_t g_cb;
 static void *g_user;
+static ieee154_phy_hdr_cb_t g_hdr_cb;
+static void *g_hdr_user;
+/* Samples fed before the block, or up to the sample being decided in it. */
+static uint32_t g_pos;
+
+void ieee154_phy_set_hdr_cb(ieee154_phy_hdr_cb_t cb, void *user)
+{
+	g_hdr_cb = cb;
+	g_hdr_user = user;
+}
 
 void ieee154_phy_set_rx_cb(ieee154_phy_frame_cb_t cb, void *user)
 {
@@ -209,8 +223,16 @@ static __attribute__((noinline)) void trk_chip_slow(struct trk *t)
 			}
 			t->pos = 0;
 			t->st = ST_PSDU;
+			/* A symbol is 32 chips, 64 samples at 2 per chip; a byte two symbols. */
+			t->end_pos = g_pos + 128U * t->len;
+			t->hdr_want = g_hdr_cb != NULL &&
+				      g_hdr_cb(t->buf, 0, t->len, t->end_pos, g_hdr_user);
 		} else {
 			t->buf[t->pos++] = byte;
+			if (t->hdr_want && t->pos < t->len) {
+				t->hdr_want = g_hdr_cb(t->buf, t->pos, t->len, t->end_pos,
+						       g_hdr_user);
+			}
 			if (t->pos == t->len) {
 				uint16_t fcs = t->buf[t->len - 2] |
 					       (t->buf[t->len - 1] << 8);
@@ -238,6 +260,11 @@ static __attribute__((noinline)) void trk_chip_slow(struct trk *t)
 /* DC removal state (Q8) and discriminator history */
 static int32_t dc_i, dc_q, pi1, pq1, pi2, pq2;
 static uint32_t n_total;
+
+uint32_t ieee154_phy_rx_position(void)
+{
+	return g_pos;
+}
 
 void ieee154_phy_rx_reset(void)
 {
@@ -279,6 +306,7 @@ uint32_t ieee154_phy_chips(int sym)
 				    : (uint32_t)(cnt) - (a_) >= 32U) {                       \
 			(t)->win = w_;                                                       \
 			(t)->nchip = (cnt);                                                  \
+			g_pos = n_total + (uint32_t)k + 1U;                                  \
 			trk_chip_slow(t);                                                    \
 			s0 = t0->st;                                                         \
 			s1 = t1->st;                                                         \
@@ -298,6 +326,8 @@ void ieee154_phy_rx_block(const int16_t *iq, size_t n)
 	int hunting = s0 == ST_HUNT && s1 == ST_HUNT;
 	const uint32_t ref = chips_msk[0];
 	size_t k = 0;
+
+	g_pos = n_total;
 
 	/* Sample k goes to t0 for even k: chip count c0 + k / 2 + 1 after it. */
 	for (; k + 1 < n; k++) {

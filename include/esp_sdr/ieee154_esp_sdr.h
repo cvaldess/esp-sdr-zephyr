@@ -46,6 +46,26 @@ struct ieee154_esp_sdr_stats {
 	uint32_t ring_cycles_x100, ring_slice_max, ring_abandoned;
 	/** Last ring run: interrupt windows opened, and the CPU interrupt lines pending in them. */
 	uint32_t ring_irq_windows, ring_irq_lines;
+	/** Worst bank switch lateness of all runs, in ring pairs. */
+	uint32_t ring_late_max;
+	/**
+	 * Ring receive: frames decided, and the time from a frame's last
+	 * sample to the PHY's decision (min, max, sum), in us.
+	 */
+	uint32_t verdict_n, verdict_min_us, verdict_max_us, verdict_sum_us;
+	/**
+	 * ACKs sent (CONFIG_ESP_SDR_IEEE802154_AUTO_ACK): frames that asked
+	 * this node for one, armed bursts that failed, fired, refused by the
+	 * ring (too late), cancelled (FCS failed); frames without a
+	 * destination address (not acknowledged).
+	 */
+	uint32_t ack_due, ack_arm_failed, ack_fired, ack_fire_failed, ack_cancelled;
+	uint32_t ack_unsupported;
+	/**
+	 * Armed frames: the verdict after the frame's end (max, sum, how many
+	 * after the ACK delay), and how far the PHY was behind at the arm (max), in us.
+	 */
+	uint32_t ack_verdict_max_us, ack_verdict_sum_us, ack_verdict_late, ack_lag_max_us;
 };
 
 struct net_pkt;
@@ -154,6 +174,38 @@ size_t ieee154_esp_sdr_get_stall(uint32_t *pc, uint32_t *ls, size_t max);
 
 /** Copy the driver counters into @p stats. */
 void ieee154_esp_sdr_get_stats(struct ieee154_esp_sdr_stats *stats);
+
+struct ieee154_esp_sdr_bench {
+	/** ACK waveform: chips, DAC words (all, and from slot 416 on) in CPU cycles; its length. */
+	uint32_t ack_build_cyc, ack_gen_cyc, ack_tail_cyc, ack_words;
+	/** Front end switch RX to TX and back, settle times included, in us. */
+	uint32_t to_tx_us, to_rx_us;
+};
+
+/** @brief Time the ACK waveform build and the front end switches (radio taken meanwhile). */
+int ieee154_esp_sdr_bench(struct ieee154_esp_sdr_bench *b);
+
+/**
+ * @brief ACK timing (CONFIG_ESP_SDR_IEEE802154_AUTO_ACK): first sample @p delay_us
+ * after the frame's end (192 us by the standard), none after @p limit_us.
+ * @return 0, -EINVAL, -ENOTSUP.
+ */
+int ieee154_esp_sdr_set_ack_timing(uint32_t delay_us, uint32_t limit_us);
+
+/** @brief Diagnostic: send one ACK with sequence number @p seq now (receive running). */
+int ieee154_esp_sdr_ack_test(uint8_t seq);
+
+/** @brief Zero the driver's counters. */
+void ieee154_esp_sdr_clear_stats(void);
+
+/**
+ * @brief Set the ring's unit length (ring receive), for latency measurements.
+ *
+ * @param pairs 0 for the driver's default (ESP_SDR_RING_UNIT_MIN), else see
+ *              esp_sdr_ring_cfg::unit_pairs.
+ * @return 0 or -EINVAL.
+ */
+int ieee154_esp_sdr_set_ring_unit(uint32_t pairs);
 
 /**
  * With CONFIG_ESP_SDR_IEEE802154_HIGH_RAM_APP, defined by the application:

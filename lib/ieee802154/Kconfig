@@ -10,8 +10,8 @@ config ESP_SDR_IEEE802154
 	  through the DAC backend. With CONFIG_NET_L2_IEEE802154 it is a
 	  network interface; without, a plain device whose frames go to
 	  ieee154_esp_sdr_set_rx_cb() (raw 802.15.4 mode would compile out
-	  the interface layer the Wi-Fi driver needs). Waits for ACKs; does
-	  not send them, and has no CCA or address filtering: see
+	  the interface layer the Wi-Fi driver needs). Waits for ACKs, sends
+	  them with ESP_SDR_IEEE802154_AUTO_ACK; no CCA: see
 	  doc/ieee802154.md. Needs CONFIG_IEEE802154 (packet fields) and
 	  CONFIG_HWINFO (the extended address comes from the chip's id).
 
@@ -26,6 +26,26 @@ config ESP_SDR_IEEE802154_RING
 	  The 16 MS/s ring decimated by 4 (ESP_SDR_RING_DECIM_BOX4) on CPU 1,
 	  the PHY on CPU 0 through a sample ring in internal RAM. Without it, receive
 	  uses separate bank captures of about 1 ms.
+
+config ESP_SDR_IEEE802154_AUTO_ACK
+	bool "Send ACKs"
+	default y
+	depends on ESP_SDR_IEEE802154_RING
+	help
+	  Acknowledge frames to this node that ask for it, from inside the
+	  ring run (doc/ieee802154-ack.md): the ring rotates through two banks,
+	  the third holds the ACK waveform, and the run stops at the end of
+	  such a frame, plays the ACK 192 us after it once the PHY has checked
+	  the FCS, and restarts. Not in promiscuous mode.
+
+config ESP_SDR_IEEE802154_ACK_PRIORITY
+	int "PHY thread priority while an ACK is armed"
+	default 0
+	depends on ESP_SDR_IEEE802154_AUTO_ACK
+	help
+	  From the frame's header to the verdict on its FCS (about 100 us
+	  after its end) the PHY thread runs at this priority, so that no
+	  other thread on CPU 0 delays the ACK.
 
 config ESP_SDR_IEEE802154_HIGH_RAM_APP
 	bool "Internal RAM from the application"

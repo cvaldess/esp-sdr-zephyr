@@ -67,6 +67,12 @@ static void tx_gain_apply(int step)
 
 void esp_sdr_tx_prepare(void)
 {
+	esp_sdr_tx_front_end();
+	k_busy_wait(esp_sdr_turn_settle_us);
+}
+
+void esp_sdr_tx_front_end(void)
+{
 	if (esp_sdr_turn_retune) {
 		esp_sdr_tune();
 	}
@@ -85,7 +91,6 @@ void esp_sdr_tx_prepare(void)
 	/* Without a frame in flight the MAC never enables TX on its own. */
 	force_txon_mode(1, 0, 0);
 #endif
-	k_busy_wait(esp_sdr_turn_settle_us);
 }
 
 int esp_sdr_tx_set_gain(int index)

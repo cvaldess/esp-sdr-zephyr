@@ -1,6 +1,6 @@
 # Sending ACKs from the software radio
 
-A plan, nothing built yet. The S3 software radio receives 802.15.4 frames and the ACKs to its own frames ([ieee802154.md](ieee802154.md)), but it cannot send an ACK in time. Zigbee and Thread need one for every unicast frame to the node that has the AR bit set: without it the sender retries three times and reports the frame as lost, so the S3 cannot even join a network as an end device (the association response from the parent asks for an ACK). This page plans an ACK path that meets the 802.15.4 deadline and lists what has to be measured first.
+Built (2026-10-12): the S3 acknowledges frames to its address from inside the ring run, 192 us after their end in more than 99 % of the cases. "Built" below says how; the plan and the phase 0 measurements that led there follow it. The S3 software radio receives 802.15.4 frames and the ACKs to its own frames ([ieee802154.md](ieee802154.md)), but it cannot send an ACK in time. Zigbee and Thread need one for every unicast frame to the node that has the AR bit set: without it the sender retries three times and reports the frame as lost, so the S3 cannot even join a network as an end device (the association response from the parent asks for an ACK). This page plans an ACK path that meets the 802.15.4 deadline and lists what has to be measured first.
 
 ## The deadline
 
@@ -24,6 +24,64 @@ A plan, nothing built yet. The S3 software radio receives 802.15.4 frames and th
 In all: milliseconds against 192 us. With the Zephyr L2, a driver without `IEEE802154_HW_RX_TX_ACK` gets its ACKs sent by the L2 through `tx()` (`ieee802154_acknowledge()`); on this driver that ACK leaves milliseconds late and stops reception while it does.
 
 The delay is hand-over and start-up, not computation. None of the radio's fixed-function blocks surveyed for acceleration (power and DC estimator, CCA counters, other dump sources) is on this path; one appears below as an optional way to save ring overhead.
+
+## Built
+
+With `CONFIG_ESP_SDR_IEEE802154_AUTO_ACK` (default with the ring receive) the driver reports `IEEE802154_HW_RX_TX_ACK` and `IEEE802154_HW_FILTER`:
+
+- **Ring** (`esp_sdr_ring_cfg::spare_bank`, `esp_sdr_ring_burst_*()`): units of 1024 pairs, rotation through banks 0 and 1 only, so bank 2 is the CPUs' for the ACK waveform for the whole run. Armed with the frame's end pair, the run builds the rest of the waveform between its polls, stops at the first unit boundary at or after the end, hands the last unit to the PHY, switches the front end to TX without the settle wait, plays bank 2 once when CPU 0 fires (or drops it on a cancel or at the limit), switches back to RX and restarts the capture. The pair index keeps counting real time over the gap, so the PHY resets there as at any gap.
+- **PHY** (`ieee154_phy_set_hdr_cb()`): reports the length and the predicted end at the PHR and each further byte.
+- **Driver:** decides from the frame control, PAN ID and destination address (`filter()`, not in promiscuous mode) whether an ACK is due; arms with the sequence number; fires `ack_delay` (192 us) after the end when the FCS passes, cancels when the PHY is past the end without a verdict. The first 416 slots of every ACK (preamble, SFD, PHR, frame control low nibble) go to bank 2 before each run. While armed the PHY thread does not sleep and runs at `CONFIG_ESP_SDR_IEEE802154_ACK_PRIORITY`. Not done: Enh-Ack (frame version 2), frames without a destination address to a PAN coordinator, the frame pending bit (always 0).
+- **wpan:** `wpan set ack <delay>[,<limit>]`, `wpan bench acktx [seq]` (one ACK on the air now), counters in `wpan status`.
+
+Measured with the C6 sending to the S3 (`wpan tx 200 10 <payload> 0x0001 1`, the C6 reports ok when its hardware got the ACK), coax with 30 dB:
+
+| Case | Result |
+| --- | --- |
+| Channel 15, payloads 8, 16, 50, 100 bytes | 200 of 200 ACKs each |
+| Channels 11, 20, 25, payloads 8 and 100 | 197 to 200 of 200; each miss a frame the S3 did not receive (the PHY's sample skips, see phase 0) |
+| Promiscuous, broadcast, another address | no ACK sent |
+| Start after the frame's end | 192 us for 397 of 400; the rest up to about 350 us |
+| Verdict (FCS checked) after the end | average 115 to 125 us, at most 150 to 226 us |
+| Front end in TX after the end | 86 us typically, at most 208 us (waveform still being built after the stop for short frames) |
+| Capture running again after the end | about 670 us (the ACK ends at 544 us) |
+
+Steps that got there: the front end's 50 us settle no longer delays an ACK (late ACKs 35 of 400 went to 0); the PHY thread's raised priority while armed (34 to 17 of 400 before that). The interop test (frames both ways, the S3's own ACK requests) passes as before on the two-bank ring.
+
+Open: the S3 receiving ACKs to its own frames gets 49 of 50 per channel since the 1024-pair units (50 of 50 before); the PHY's sample skips on CPU 0; the TX gain call (38 us) on every ACK (skip it when unchanged, if the forced gain survives the RX phase); the internal RAM is nearly used up in the standalone wpan image (the ISR stacks went from 1280 to 1024 bytes for it).
+
+## Phase 0 results (2026-10-12)
+
+Measured on the XIAO S3 against the C6, coax with 30 dB between them, channel 15 unless noted. The code for them is in the tree, uncommitted at the time of writing: the ring's unit length as a run parameter (`esp_sdr_ring_cfg::unit_pairs`, guards derived at run start), `esp_sdr_ring_now()`, `ieee154_phy_rx_position()`, the driver's verdict counters, `wpan set unit` and `wpan bench ack`.
+
+- **The C6's ACK timeout is 1728 us** (`wpan status` on the C6: 108 units of 16 us, the hardware default). Far more lenient than the 864 us of the standard; other peers will not be.
+- **Verdict latency** (frame's last sample to the PHY's frame callback, from the ring's live pair index), 200 frames of 16 bytes:
+
+  | Unit (pairs) | min | avg | max (us) |
+  | --- | --- | --- | --- |
+  | 12288 | 751 | 917 | 1067 |
+  | 4096 | 272 | 522 | 865 |
+  | 2048 | 146 | 273 | 829 |
+  | 1024 | 84 | 104 | 177 |
+
+  With 100-byte frames on channels 11 to 25 at 1024: average about 118 us, maxima 135 to 414 us (the tail is CPU 0 contention, see below).
+- **The ring at 1024-pair units** keeps up: 8.5 cycles per pair (subsampling sink included, budget 15), worst switch 60 to 137 pairs late (limit 896), no unit abandoned over minutes. This needed a faster subsampling path: 9.3 cycles per pair with an empty sink before (every store reloaded the run state, the build does not assume strict aliasing), 3.05 after. The driver now runs 1024-pair units always: with the faster path, 12288-pair units arrive as one burst larger than the PHY's "fell behind" margin, and 73 of 200 frames were lost that way.
+- **CPU 0 contention:** the PHY (87 % of CPU 0, lowest priority) still skips about 0.2 % of the samples while idle and a burst at each ring restart. With 1024 units interop is 197 to 200 of 200 per direction and 48 to 49 of 50 ACKs received, slightly below the phase 1 bar; a skip at a frame end is also a lost ACK. Open.
+- **ACK waveform**, scalar slot copies into the capture bank: chips 3.2 to 3.8k cycles (16 us); all 14100 words 60 to 63k cycles (**251 us**); from slot 416 on, the part that depends on the sequence number, frame pending bit and FCS, 25k cycles (105 us). About 85 cycles per 20-word slot.
+- **Front end**, `esp_sdr_tx_loop_begin()` / `_end()` with the 50 us settle: RX to TX 143 to 156 us, TX to RX 140 to 158 us. Per call, in cycles at 240 MHz:
+
+  | RX to TX | cycles | TX to RX | cycles |
+  | --- | --- | --- | --- |
+  | `rom_pbus_workmode()` | 1811 | `phy_stop_tx_tone(1)` | 4512 |
+  | `rom_pbus_xpd_rx_on(0)` | 753 | `force_txon_mode(0, ...)` | 365 |
+  | `rom_pbus_xpd_tx_on(1)` | 1092 | workmode, xpd tx off, rx on, rxclk | 2533 |
+  | `force_tx_gain()` | 9013 to 9511 | `force_rx_gain()` | 9767 to 11822 |
+  | `tx_lo_select()` (I2C) | 2766 | `rx_lo_select()` (I2C) | 1720 |
+  | `force_txon_mode(1, ...)` | 2227 | filter code (I2C) | 1412 |
+
+  The two gain calls are half of it. A fast path that skips them when unchanged (to be checked: does a forced TX gain survive the RX phase, and the RX gain the TX phase?) and the tone stop (no tone runs in DAC mode) leaves about 35 to 40 us each way plus the settle time.
+
+**Consequences for the design below.** At 1024-pair units the next unit's sentinel windows never overlap the unit still being filtered, so the ring needs only two banks. The third bank then holds the ACK waveform for good: preamble, SFD, PHR and the low frame control nibble (416 slots) built once, and per frame only the slots from 416 on patched in as soon as the header gives the sequence number (the frame pending bit and FCS again at the verdict if the bit changes). This replaces "the waveform into a free bank" in step 3, and with the slow scalar build (105 us for the tail) it is the variant that fits; a 128-bit copy would cut the tail further. Budget with the measured numbers: verdict at E + 84 to 177 us; the stop at the first boundary after E (0 to 64 us) plus the TX fast path (about 40 us plus settle) puts the transmitter ready by about E + 160 us; so the ACK can start at E + 192 us in most cases.
 
 ## Design
 
