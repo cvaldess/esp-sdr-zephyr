@@ -91,6 +91,8 @@ typedef bool (*esp_sdr_tx_paced_input_t)(void *user, int16_t *i, int16_t *q);
  * @param rate_hz Input rate; rate times @p interp must divide the CPU clock.
  * @param interp Interpolation factor: 1 (input straight to the DAC), 2, 4 or 8.
  * @param power Power step, 0 weakest to esp_sdr_tx_paced_power_max().
+ * @param input Called once per input sample from esp_sdr_tx_paced_poll().
+ * @param user Passed to @p input.
  * @return 0, -EINVAL, -ERANGE outside the transmit range, -EAGAIN before
  *         esp_sdr_init().
  */

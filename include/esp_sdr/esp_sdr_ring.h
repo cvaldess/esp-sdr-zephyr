@@ -226,6 +226,10 @@ uint32_t *esp_sdr_ring_burst_buf(size_t *words);
  *                   fire seen later is skipped.
  * @param gen Builds words [from, words) of the bank between polls before the
  *            stop, and the rest after it; words below @p from are kept.
+ * @param user Passed to @p gen.
+ * @param from First word @p gen builds; the caller has written those before it.
+ * @param words Length of the burst in DAC words, ESP_SDR_SAMPLES_MIN to
+ *              ESP_SDR_SAMPLES_MAX.
  * @return 0, -EINVAL, or -EBUSY when no run with a spare bank is active or
  *         a burst is armed already.
  */
