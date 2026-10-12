@@ -29,7 +29,7 @@
 #include "vrt_rx.h"
 #include "vrt_tx.h"
 
-LOG_MODULE_DECLARE(sdr_stream, LOG_LEVEL_INF);
+LOG_MODULE_DECLARE(stream, LOG_LEVEL_INF);
 
 /* A 1500 byte datagram. */
 #define RX_WORDS       375

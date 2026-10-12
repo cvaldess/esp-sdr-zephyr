@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Two-board TX/RX lab for sdr_stream: drive both shells, record the receiver's
+"""Two-board TX/RX lab for stream: drive both shells, record the receiver's
 VRT stream with numpy, analyse it with a GNU Radio FFT flowgraph.
 
 Boards are addressed by USB serial; the receiver's NCM interface is found from

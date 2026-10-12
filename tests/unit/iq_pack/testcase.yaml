@@ -2,7 +2,7 @@ tests:
   unit.esp_sdr.iq_pack:
     tags:
       - esp-sdr
-      - sdr_stream
+      - stream
     platform_allow:
       - native_sim
       - native_sim/native/64

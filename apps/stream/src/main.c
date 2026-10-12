@@ -20,7 +20,7 @@
 #include "app_cpu.h"
 #include "app_usb.h"
 
-LOG_MODULE_REGISTER(sdr_stream, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(stream, LOG_LEVEL_INF);
 
 #define CAPTURE_CPU 0
 #define PROCESS_CPU 1
@@ -214,7 +214,7 @@ static void process(void *p1, void *p2, void *p3)
 
 int main(void)
 {
-	printk("sdr_stream %s\n", APP_VERSION_STRING);
+	printk("stream %s\n", APP_VERSION_STRING);
 	LOG_INF("cpus %u, %u MHz, %u-sample bursts", arch_num_cpus(), CONFIG_APP_FREQ_MHZ,
 		CONFIG_APP_RX_BURST_SAMPLES);
 

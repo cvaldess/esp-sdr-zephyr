@@ -503,7 +503,7 @@ static int proxy_cmd(const char *name, const struct shell *sh, size_t argc, char
 			       "Command of the loaded app (app list)", UTIL_CAT(proxy_cmd_, _name), \
 			       1, SHELL_OPT_ARG_CHECK_SKIP)
 
-/* Every root command the apps register: hello, rfprobe, wpan, osmosdr and sdr_stream, link. */
+/* Every root command the apps register: hello, rfprobe, wpan, osmosdr and stream, link. */
 PROXY(hello);
 PROXY(probe);
 PROXY(wpan);

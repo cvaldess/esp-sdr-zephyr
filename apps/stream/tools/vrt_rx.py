@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Receive the sdr_stream VITA 49 stream over UDP and print per-second statistics.
+"""Receive the stream VITA 49 stream over UDP and print per-second statistics.
 
 Usage: vrt_rx.py [--iface esdr0] [--port 4991] [--seconds N] [--out file.cs16]
                  [--expect-freq MHZ] [--expect-rate HZ]

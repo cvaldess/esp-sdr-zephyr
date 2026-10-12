@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-#ifndef SDR_STREAM_VRT_RX_H_
-#define SDR_STREAM_VRT_RX_H_
+#ifndef STREAM_VRT_RX_H_
+#define STREAM_VRT_RX_H_
 
 #include <stdint.h>
 
@@ -50,4 +50,4 @@ void vrt_rx_burst(const struct vrt_rx_burst *b);
 /* Called once per second after the statistics line. */
 void vrt_rx_report(void);
 
-#endif /* SDR_STREAM_VRT_RX_H_ */
+#endif /* STREAM_VRT_RX_H_ */

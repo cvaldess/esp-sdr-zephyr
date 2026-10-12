@@ -6,8 +6,8 @@
  * code swaps to network order).
  */
 
-#ifndef SDR_STREAM_IQ_PACK_H_
-#define SDR_STREAM_IQ_PACK_H_
+#ifndef STREAM_IQ_PACK_H_
+#define STREAM_IQ_PACK_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -48,4 +48,4 @@ size_t iq_pack(const struct esp_sdr_iq16 *s, size_t n, unsigned int bits, int32_
 size_t iq_unpack(const uint32_t *words, size_t nwords, unsigned int bits, int16_t *iq,
 		 size_t max);
 
-#endif /* SDR_STREAM_IQ_PACK_H_ */
+#endif /* STREAM_IQ_PACK_H_ */

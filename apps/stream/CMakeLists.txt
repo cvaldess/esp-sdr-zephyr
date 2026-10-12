@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(esp_sdr_sdr_stream)
+project(esp_stream)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../common/common.cmake)
 

@@ -1,6 +1,6 @@
-# sdr_stream RX and TX signal path: antenna pin to/from host sample
+# `stream` RX and TX signal path: antenna pin to/from host sample
 
-RX (antenna in -> host sample) and TX (host sample -> antenna out) for `apps/sdr_stream`.
+RX (antenna in -> host sample) and TX (host sample -> antenna out) for `apps/stream`.
 
 ![mermaid](signal_path.svg)
 

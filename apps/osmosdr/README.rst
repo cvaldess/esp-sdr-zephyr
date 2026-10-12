@@ -1,7 +1,7 @@
 .. _esp_sdr_osmosdr:
 
-ESP-SDR osmosdr
-###############
+osmosdr
+#######
 
 Overview
 ********
@@ -35,7 +35,7 @@ Building and flashing
    west flash
 
 The app uses the same USB IDs as the other apps (2fe3:0005, host udev rules
-as in ``apps/sdr_stream/README.rst``); hosts find it by its vendor
+as in ``apps/stream/README.rst``); hosts find it by its vendor
 interface and the ``GET_INFO`` magic.
 
 The three ring banks leave little internal RAM: sample blocks, filter

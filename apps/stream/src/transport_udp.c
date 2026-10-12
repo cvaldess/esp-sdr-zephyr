@@ -15,7 +15,7 @@
 
 #include "transport.h"
 
-LOG_MODULE_DECLARE(sdr_stream, LOG_LEVEL_INF);
+LOG_MODULE_DECLARE(stream, LOG_LEVEL_INF);
 
 static int sock = -1;
 static struct net_if *usb_if;

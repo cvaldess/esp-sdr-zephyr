@@ -116,11 +116,11 @@ multiapp_extension(hello SOURCES ${CMAKE_CURRENT_LIST_DIR}/ext/hello.c)
 multiapp_extension(capture STACK 4096 SOURCES ${apps_dir}/capture/src/main.c)
 multiapp_extension(rfprobe STACK 2048 SOURCES ${apps_dir}/rfprobe/src/main.c)
 multiapp_extension(wpan STACK 1536 SOURCES ${apps_dir}/wpan/src/main.c)
-set(sdr_stream ${apps_dir}/sdr_stream/src)
-multiapp_extension(sdr_stream APP ${apps_dir}/sdr_stream STACK 2048 USB 1 # MULTIAPP_USB_NCM
-  SOURCES ${sdr_stream}/main.c ${sdr_stream}/vrt_rx.c ${sdr_stream}/iq_pack.c
-          ${sdr_stream}/shell.c ${sdr_stream}/vrt_tx.c ${sdr_stream}/transport_udp.c)
-set_source_files_properties(${sdr_stream}/iq_pack.c PROPERTIES COMPILE_OPTIONS -O3)
+set(stream ${apps_dir}/stream/src)
+multiapp_extension(stream APP ${apps_dir}/stream STACK 2048 USB 1 # MULTIAPP_USB_NCM
+  SOURCES ${stream}/main.c ${stream}/vrt_rx.c ${stream}/iq_pack.c
+          ${stream}/shell.c ${stream}/vrt_tx.c ${stream}/transport_udp.c)
+set_source_files_properties(${stream}/iq_pack.c PROPERTIES COMPILE_OPTIONS -O3)
 
 # osmosdr: its vendor USB class is in the host (src/osmosdr.c), the rest an
 # extension whose USB blocks and ring and USB thread stacks are in the area.

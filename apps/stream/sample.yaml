@@ -13,5 +13,5 @@ common:
 tests:
   # The console is on USB CDC-ACM, which twister cannot reach over
   # USB-Serial-JTAG: run it with tools/vrt_rx.py instead (see README).
-  sample.esp_sdr.sdr_stream:
+  sample.esp_sdr.stream:
     build_only: true

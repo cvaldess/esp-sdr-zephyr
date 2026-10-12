@@ -1,14 +1,16 @@
 .. _esp_sdr_multiapp:
 
-multiapp: one firmware that runs the others
-###########################################
+multiapp
+########
+
+one firmware that runs the others
 
 Overview
 ********
 
 One image that runs the other apps as Zephyr loadable extensions (llext,
 ``doc/multiapp.md``), with the USB classes they need living in the image
-itself. ``capture``, ``rfprobe``, ``wpan``, ``sdr_stream``, ``osmosdr`` and
+itself. ``capture``, ``rfprobe``, ``wpan``, ``stream``, ``osmosdr`` and
 ``link`` run as extensions, built from their own sources and loaded from their
 files on a FAT volume in the flash, with copies built into the image as the
 fallback; ``hello`` (``ext/hello.c``) is the loader check (``hello atomic``
@@ -19,7 +21,7 @@ instruction bus alias of its PSRAM copy (``CONFIG_LLEXT_EXEC_ALIAS``, on the
 Zephyr branch ``west.yml`` pins). One app runs per boot: an app cannot be
 stopped cleanly, so starting another one reboots into it. USB enumerates once
 per boot too: the classes an app needs besides the CDC-ACM shell and DFU
-(sdr_stream's CDC-NCM, osmosdr's vendor class) come with a reboot into it, as
+(``stream``'s CDC-NCM, osmosdr's vendor class) come with a reboot into it, as
 does the internal RAM area that osmosdr and the 802.15.4 driver take turns on.
 
 Building and flashing
@@ -46,7 +48,7 @@ Then, on the CDC-ACM shell:
    capture        5124 bytes, file 5124 bytes
    rfprobe        8596 bytes, file 8596 bytes
    wpan          18216 bytes, file 18216 bytes
-   sdr_stream    30264 bytes, file 30264 bytes
+   stream    30264 bytes, file 30264 bytes
    osmosdr       17900 bytes, file 17900 bytes
    link          81320 bytes, file 81320 bytes
    uart:~$ app run rfprobe

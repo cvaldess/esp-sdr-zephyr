@@ -21,7 +21,7 @@ The API reference of the library is generated with Doxygen:
    :caption: Apps
 
    apps/capture
-   apps/sdr_stream
+   apps/stream
    apps/osmosdr
    apps/osmosdr_serial
    apps/link

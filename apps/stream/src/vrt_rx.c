@@ -27,7 +27,7 @@
 #include "vrt_rx.h"
 #include "transport.h"
 
-LOG_MODULE_DECLARE(sdr_stream, LOG_LEVEL_INF);
+LOG_MODULE_DECLARE(stream, LOG_LEVEL_INF);
 
 #define SAMPLES_PER_PACKET CONFIG_APP_RX_SAMPLES_PER_PACKET
 /* Header, stream ID, TSI, two TSF words, trailer. */

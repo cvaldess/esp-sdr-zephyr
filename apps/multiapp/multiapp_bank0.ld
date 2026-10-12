@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Ring bank 0 (esp_sdr_bank_ring.ld only reserves it) for buffers no ring
- * user needs: sdr_stream's CDC-NCM DMA buffers, and the FAT volume's FATFS
+ * user needs: stream's CDC-NCM DMA buffers, and the FAT volume's FATFS
  * object, flash disk cache and USB drive buffer, used only before an app or
  * without one (src/drive.c). Included before .dram0.noinit and .dram0.bss, so
  * these sections land here; nothing zeroes them.

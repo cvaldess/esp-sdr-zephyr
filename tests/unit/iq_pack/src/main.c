@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Unit test of apps/sdr_stream/src/iq_pack.c: pack/unpack round trip at
+ * Unit test of apps/stream/src/iq_pack.c: pack/unpack round trip at
  * 8, 12 and 16 bits. 16-bit items are a lossless passthrough; 8 and
  * 12-bit items are quantized and always unpacked back out at full int16
  * scale (32767), not at the original full_scale, so this checks

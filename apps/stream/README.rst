@@ -1,7 +1,7 @@
-.. _esp_sdr_sdr_stream:
+.. _esp_stream:
 
-ESP-SDR stream
-##############
+stream
+######
 
 Overview
 ********
@@ -58,7 +58,7 @@ The sample needs MCUboot (sysbuild) and the manual gain blob:
 .. code-block:: console
 
    west blobs fetch esp-sdr-zephyr
-   west build --sysbuild -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/sdr_stream
+   west build --sysbuild -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/stream
    west flash
 
 Later updates: ``west dfu -s <usb serial>`` (see ``apps/osmosdr/README.rst``).
@@ -68,7 +68,7 @@ Receiving
 
 .. code-block:: console
 
-   python3 esp-sdr-zephyr/apps/sdr_stream/tools/vrt_rx.py --iface esdr0 --seconds 10 --out iq.cs16
+   python3 esp-sdr-zephyr/apps/stream/tools/vrt_rx.py --iface esdr0 --seconds 10 --out iq.cs16
 
 The script prints rates, decoded context and counter gaps, writes the samples
 as little endian complex int16, and exits 0 when the stream is valid.

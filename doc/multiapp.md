@@ -1,6 +1,6 @@
 # multiapp: one firmware that runs the others
 
-Status: all six apps (`capture`, `rfprobe`, `wpan`, `sdr_stream`, `osmosdr`, `link`) run as
+Status: all six apps (`capture`, `rfprobe`, `wpan`, `stream`, `osmosdr`, `link`) run as
 llext extensions from PSRAM, built from their unchanged sources, one app per boot, on the image of
 `apps/multiapp/` ("the host"). The host loads each app from its `<name>.llext` file on a FAT
 volume in flash, which the PC sees as a USB drive in boots without an app; built-in copies are
@@ -60,7 +60,7 @@ Usage: `apps/multiapp/README.rst`.
   | Class | Used by | IN endpoints |
   | --- | --- | --- |
   | CDC-ACM (shell) | every boot | 2 |
-  | CDC-NCM | sdr_stream | 2 |
+  | CDC-NCM | stream | 2 |
   | vendor bulk (`usb_sdr.c`) | osmosdr | 1 |
   | MSC (the volume as a drive) | boots without an app | 1 |
   | DFU | every boot | 0 |
@@ -69,7 +69,7 @@ Usage: `apps/multiapp/README.rst`.
   `src/osmosdr.c` that look the app's functions up by name, so the boot's app is loaded before
   USB starts.
 - **NCM's DMA buffers in bank 0** (`multiapp_bank0.ld`): USB DMA needs internal RAM, and
-  sdr_stream never runs the ring, so bank 0 is free in its boots.
+  `stream` never runs the ring, so bank 0 is free in its boots.
 - **An internal RAM area, one user per boot.** Buffers an app must keep in internal RAM
   (`ESP_SDR_HIGH_BUF_DEFINE()`, `ESP_SDR_HIGH_STACK_DEFINE()`) become host objects in
   `multiapp_area`, 24 KB of the high region (`AREA` in `multiapp_extension()`). osmosdr takes
@@ -116,7 +116,7 @@ thread 1008 of 1280, drive thread 880 of 1152 while the PC copies 2 MB.
 
 - wpan against the C6 (`interop.py`, 100 frames of 100 bytes): 100 of 100 each way and 50 of 50
   ACKs on channels 11, 15, 20 and 25; DFU while the ring runs.
-- sdr_stream: 947 kB/s of VITA 49.2 over NCM (standalone 968 kB/s); `vrt_tx.py` passes as
+- `stream`: 947 kB/s of VITA 49.2 over NCM (standalone 968 kB/s); `vrt_tx.py` passes as
   standalone.
 - osmosdr (`esdr_usb`): `test-in` 1154 kB/s, receive at 250 kS/s (8 and 16 bit) without overflow
   or gaps, 1.25 M samples transmitted with none dropped, ring at 13.3 of 15 cycles per pair.
@@ -173,12 +173,12 @@ first dump bank the app reserves):
 | rfprobe | 67 KB | 189 KB | 106 KB | 0 | 408 KB | 528 KB | 0 |
 | wpan | 89 KB | 164 KB | 0.2 KB | 37 KB | 430 KB | 532 KB | 2.6 MB |
 | osmosdr | 87 KB | 163 KB | 0.4 KB | 37 KB | 413 KB | 530 KB | 2.6 MB |
-| sdr_stream | 84 KB | 228 KB | 1.7 KB | 20 KB | 491 KB | 628 KB | 2.6 MB |
+| stream | 84 KB | 228 KB | 1.7 KB | 20 KB | 491 KB | 628 KB | 2.6 MB |
 | link | 92 KB | 228 KB | 1.0 KB | 39 KB | 460 KB | 599 KB | 1.7 MB |
 
 The part every app has (kernel, drivers, Wi-Fi and PHY blobs) is 60 to 75 KB of IRAM and 60 to
 90 KB of DRAM; the apps' own DRAM is mostly buffers. Imports per app from the host: capture 17,
-rfprobe 56, wpan 60, osmosdr 68, sdr_stream 108, link 92; 197 symbols in the union.
+rfprobe 56, wpan 60, osmosdr 68, stream 108, link 92; 197 symbols in the union.
 
 ## Design choices
 

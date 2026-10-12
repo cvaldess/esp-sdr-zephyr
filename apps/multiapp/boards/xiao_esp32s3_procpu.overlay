@@ -16,7 +16,7 @@
 		cache-size = <4096>;
 	};
 
-	/* sdr_stream's USB network function; the host side gets MAC 00:00:5e:00:53:01. */
+	/* stream's USB network function; the host side gets MAC 00:00:5e:00:53:01. */
 	cdc_ncm_eth0: cdc_ncm_eth0 {
 		compatible = "zephyr,cdc-ncm-ethernet";
 		remote-mac-address = "00005E005301";

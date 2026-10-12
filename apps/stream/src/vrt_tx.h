@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-#ifndef SDR_STREAM_VRT_TX_H_
-#define SDR_STREAM_VRT_TX_H_
+#ifndef STREAM_VRT_TX_H_
+#define STREAM_VRT_TX_H_
 
 #include <stdint.h>
 
@@ -26,4 +26,4 @@ void vrt_tx_get_stats(struct vrt_tx_stats *stats);
 /* The transmit frequency and sample rate in use. */
 void vrt_tx_get_settings(uint64_t *freq_hz, uint32_t *rate_hz);
 
-#endif /* SDR_STREAM_VRT_TX_H_ */
+#endif /* STREAM_VRT_TX_H_ */

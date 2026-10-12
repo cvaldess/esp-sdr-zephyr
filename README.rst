@@ -26,7 +26,7 @@ Contents
        ``ieee154_phy.h``, ``ieee154_esp_sdr.h``
    * - ``apps/``
      - - ``capture``: capture survey on the console
-       - ``sdr_stream``: VITA 49.2 RX and TX over USB (CDC-NCM)
+       - ``stream``: VITA 49.2 RX and TX over USB (CDC-NCM)
        - ``osmosdr``: HackRF-style USB SDR for GNU Radio and gqrx
        - ``osmosdr_serial``: the same over USB-Serial-JTAG (C6, C5)
        - ``link``: QAM or OFDM packet link

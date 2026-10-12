@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Drive the sdr_stream VITA 49.2 transmit path and check it.
+"""Drive the stream VITA 49.2 transmit path and check it.
 
 Sends control, query-state and signal data packets to the board, checks the
 acknowledges, then compares the board's own counters (shell "sdr status").
