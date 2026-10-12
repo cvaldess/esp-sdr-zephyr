@@ -19,7 +19,9 @@
 #include <esp_wifi.h>
 
 /* Upstream helpers, used unmodified. */
+#if !defined(CONFIG_SOC_SERIES_ESP32C5)
 #include "rx_lo.h"
+#endif
 #include "rx_tuning.h"
 
 #include "esp_sdr_priv.h"
@@ -57,10 +59,12 @@ uint32_t esp_sdr_turn_settle_us = SDR_RETUNE_SETTLE_US;
 static unsigned int sdr_cbw;
 bool esp_sdr_turn_retune = true;
 
+#if !defined(CONFIG_SOC_SERIES_ESP32C5)
 static bool is_channel(uint32_t mhz)
 {
 	return (mhz >= 2412U && mhz <= 2472U && (mhz - 2412U) % 5U == 0U) || mhz == 2484U;
 }
+#endif
 
 /*
  * LO plan. Upstream's rx_lo_plan() uses the 5/6 divider from 1842 MHz only and
@@ -72,7 +76,12 @@ static bool is_channel(uint32_t mhz)
 
 bool esp_sdr_lo_divided(void)
 {
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+	/* No divided LO path qualified on the C5. */
+	return false;
+#else
 	return esp_sdr_freq_mhz < LO_DIVIDER_BELOW_MHZ;
+#endif
 }
 
 /*
@@ -88,14 +97,29 @@ bool esp_sdr_lo_divided(void)
 
 static bool pll_in_window(void)
 {
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+	/* The C5's PLL status bits are not mapped yet. */
+	return true;
+#else
 	unsigned int status;
 
 	regi2c_enter_critical();
 	status = rx_lo_read(RFPLL_BLOCK, RX_LO_HOST, RFPLL_STATUS_REG);
 	regi2c_exit_critical();
 	return (status & RFPLL_STATUS_VCO) == 0U;
+#endif
 }
 
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+void esp_sdr_tune(void)
+{
+	/* A full channel setup at any MHz: the PHY takes values above 14 as MHz. */
+	phy_set_chanfreq(esp_sdr_freq_mhz, sdr_cbw);
+	if (esp_sdr_fofs_khz != 0) {
+		phy_set_rf_freq_offset(phy_param[PHY_PARAM_XTAL], esp_sdr_freq_mhz, esp_sdr_fofs_khz);
+	}
+}
+#else
 void esp_sdr_tune(void)
 {
 	bool divided = esp_sdr_lo_divided();
@@ -119,16 +143,18 @@ void esp_sdr_tune(void)
 	}
 #endif
 }
+#endif
 
 int esp_sdr_bank_usage(uint32_t *usage)
 {
 	uintptr_t base = (uintptr_t)__esp_sdr_bank_start;
 	uintptr_t bank = (base - DUMP_BANK0_ADDR) / DUMP_BANK_SIZE;
 
-	if (base < DUMP_BANK0_ADDR || base % DUMP_BANK_SIZE != 0U || bank >= DUMP_BANKS) {
+	if (base < DUMP_BANK0_ADDR || (base - DUMP_BANK0_ADDR) % DUMP_BANK_SIZE != 0U ||
+	    bank >= DUMP_BANKS) {
 		return -ENOMEM;
 	}
-	*usage = BIT(bank) << DUMP_USAGE_S;
+	*usage = (BIT(bank) << DUMP_USAGE_S) | DUMP_USAGE_ALLOC;
 	return 0;
 }
 

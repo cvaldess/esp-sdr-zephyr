@@ -36,12 +36,20 @@
 #define TWO_PI 6.28318530717958647692
 
 /* Vendor and ROM calls, as lib/esp_sdr uses them (doc/undocumented-registers-*.md). */
-extern unsigned int rom_chip_i2c_readReg(unsigned int block, unsigned int host, unsigned int reg);
 extern void regi2c_enter_critical(void);
 extern void regi2c_exit_critical(void);
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+/* The C5 PHY's I2C read and direct PLL setting; phy_param byte 49 is the crystal selector. */
+extern unsigned int phy_chip_i2c_readReg(unsigned int block, unsigned int host, unsigned int reg);
+#define rom_chip_i2c_readReg phy_chip_i2c_readReg
+extern void phy_set_rf_freq_offset(unsigned int xtal, unsigned int mhz, int khz);
+extern unsigned char phy_param[];
+#else
+extern unsigned int rom_chip_i2c_readReg(unsigned int block, unsigned int host, unsigned int reg);
+#endif
 #if defined(CONFIG_SOC_SERIES_ESP32S3)
 extern void set_rf_freq_offset(unsigned int xtal, unsigned int mhz, int khz);
-#else
+#elif !defined(CONFIG_SOC_SERIES_ESP32C5)
 extern void phy_set_freq(unsigned int mhz, int khz);
 #endif
 
@@ -106,6 +114,8 @@ static int cmd_raw(const struct shell *sh, size_t argc, char **argv)
 	(void)esp_sdr_set_turnaround(RAW_SETTLE_US, false);
 #if defined(CONFIG_SOC_SERIES_ESP32S3)
 	set_rf_freq_offset(0, (unsigned int)mhz, (int)khz);
+#elif defined(CONFIG_SOC_SERIES_ESP32C5)
+	phy_set_rf_freq_offset(phy_param[49], (unsigned int)mhz, (int)khz);
 #else
 	phy_set_freq((unsigned int)mhz, (int)khz);
 #endif
@@ -306,7 +316,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(probe_cmds,
 #if defined(CONFIG_SOC_SERIES_ESP32S3)
 	SHELL_CMD(tone, &tone_cmds, "loop a tone", NULL),
 #endif
-	SHELL_CMD_ARG(rx, NULL, "[n] [rate 0|1|6]: capture, base64 dump", cmd_rx, 1, 2),
+	SHELL_CMD_ARG(rx, NULL, "[n] [rate 0..6]: capture, base64 dump", cmd_rx, 1, 2),
 	SHELL_CMD_ARG(dump, NULL, "<block> [regs]: analog I2C registers", cmd_dump, 2, 1),
 #if defined(CONFIG_POWEROFF)
 	SHELL_CMD_ARG(sleep, NULL, "<ms>: deep sleep, timer wakeup", cmd_sleep, 2, 0),

@@ -24,10 +24,12 @@ repeats every 10 seconds.
 Requirements
 ************
 
-An ESP32-S3 or ESP32-C6 board; tested on ``xiao_esp32s3`` and
-``xiao_esp32c6/esp32c6/hpcore``. The C6 captures at 80 MS/s only: the survey
-skips the 40 and 16 MS/s steps and clamps the filter bandwidths to its 12 to
-54 MHz range. Attach an antenna to see more
+An ESP32-S3, ESP32-C6 or ESP32-C5 board; tested on ``xiao_esp32s3``,
+``xiao_esp32c6/esp32c6/hpcore`` and ``waveshare_esp32c5_zero/esp32c5/hpcore``.
+The C6 captures at 80 MS/s only: the survey skips the 40 and 16 MS/s steps and
+clamps the filter bandwidths to its 12 to 54 MHz range. The C5 skips the
+16 MS/s step and clamps to 11 to 48 MHz; it has no divided LO, so its 1900 MHz
+step tunes the PLL directly. Attach an antenna to see more
 than the receiver noise floor.
 
 Building and running

@@ -6,7 +6,7 @@ rfprobe: radio bench probe
 Overview
 ********
 
-A bench tool for the radio itself, on the ESP32-S3 and the ESP32-C6: tune
+A bench tool for the radio itself, on the ESP32-S3, the ESP32-C6 and the ESP32-C5: tune
 through the library's frequency plan or program the PLL directly, loop a tone
 (S3), dump raw captures and read the analog I2C registers. The firmware only
 moves data; ``tools/rfprobe.py`` does the analysis on the host. It found the
@@ -26,6 +26,10 @@ Building and flashing
    # ESP32-C6: console on USB-Serial-JTAG
    west build -d build/rfprobe-c6 -b xiao_esp32c6/esp32c6/hpcore esp-sdr-zephyr/apps/rfprobe
    west flash -d build/rfprobe-c6
+
+   # ESP32-C5 (Waveshare ESP32-C5-Zero): console on USB-Serial-JTAG, receive only
+   west build -d build/rfprobe-c5 -b waveshare_esp32c5_zero/esp32c5/hpcore esp-sdr-zephyr/apps/rfprobe
+   west flash -d build/rfprobe-c5
 
    # ESP32-S3: CDC-ACM shell and DFU through MCUboot, like the other S3 apps
    west build -d build/rfprobe-s3 --sysbuild -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/rfprobe
@@ -50,8 +54,9 @@ Shell
                                S3: loop a tone at the LO + Hz (80 or 40 MS/s DAC), gapless,
                                until "probe tone off"; the radio is held meanwhile
    probe tone off
-   probe rx [n] [rate 0|1|6]   one capture, printed as base64 lines ("d ...") of the raw
-                               little-endian words, then "end" (the C6 has 80 MS/s only)
+   probe rx [n] [rate 0..6]    one capture, printed as base64 lines ("d ...") of the raw
+                               little-endian words, then "end" (S3: 0, 1, 6; C6: 0 only,
+                               80 MS/s; C5: 0 to 5, 80 to 4 MS/s)
    probe dump <block> [regs]   analog I2C registers 0..regs-1 of one block (read only)
    probe sleep <ms>            C6: deep sleep with a timer wakeup (USB drops meanwhile)
 

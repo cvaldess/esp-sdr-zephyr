@@ -33,6 +33,10 @@ jobs:
             platforms: -p xiao_esp32c6/esp32c6/hpcore
             toolchains: riscv64-zephyr-elf
             twister-args: --build-only
+          - name: Build waveshare_esp32c5_zero
+            platforms: -p waveshare_esp32c5_zero/esp32c5/hpcore
+            toolchains: riscv64-zephyr-elf
+            twister-args: --build-only
           # Unit tests: built and run on the host. The SDK installs no
           # cross toolchain for them, only its host tools.
           - name: Unit tests

@@ -111,8 +111,64 @@
 #define AGC_GAIN_MAX       GENMASK(14, 8)
 #define AGC_GAIN_MAX_VALID 79U
 
+#elif defined(CONFIG_SOC_SERIES_ESP32C5)
+#include <soc/hp_system_reg.h>
+
+/*
+ * C5 dump engine (librftest adctrig(), upstream's C61 capture): the C6
+ * control bits with a 17-bit count, raw source 15 in bits 20:17, the rate
+ * index (80, 40, 20, 10, 8, 4 MS/s) in bits 23:21.
+ */
+#define DUMP_CTRL_REG       0x600a9004U
+#define DUMP_CTRL_RUN       BIT(31)
+#define DUMP_CTRL_TRIGGER   BIT(19)
+#define DUMP_CTRL_DONE      BIT(18)
+#define DUMP_CTRL_COUNT     GENMASK(16, 0)
+#define DUMP_MODE_REG       0x600a9008U
+#define DUMP_MODE_SOURCE    GENMASK(20, 17)
+#define DUMP_MODE_RATE      GENMASK(23, 21)
+#define DUMP_SOURCE_IQ      15U
+#define DUMP_CONFIG_REG     0x600a9018U
+#define DUMP_CONFIG_LANES   GENMASK(24, 0)
+#define DUMP_CONFIG_IQ      (24U | (25U << 6) | (26U << 12) | (27U << 18) | BIT(24))
+/* Clock forces as adctrig() sets them. */
+#define DUMP_CLK_FORCE_REG  0x600a9c04U
+#define DUMP_CLK_EN_REG     0x600a0800U
+#define DUMP_CLK_EN_BIT     BIT(2)
+/* No source gate write: 0x600a20b4 reads 0 and any access stalls 1.6 ms here. */
+#define DUMP_TIMEOUT_US     20000U
+
+/*
+ * 128 KiB SRAM blocks, owned one-hot in SRAM_USAGE; the owner takes the whole
+ * block from the CPU. MAC_DUMP_ALLOC puts the samples 64 KiB into the block.
+ * Block 2 holds ROM data, so only block 1 serves.
+ */
+#define DUMP_BANK0_ADDR     (0x40800000U + DUMP_ALLOC_OFFSET)
+#define DUMP_BANK_SIZE      0x20000U
+#define DUMP_BANKS          2U
+#define DUMP_ALLOC_OFFSET   0x10000U
+#define DUMP_USAGE_REG      HP_SYSTEM_SRAM_USAGE_CONF_REG
+#define DUMP_USAGE_M        (HP_SYSTEM_SRAM_USAGE_M | HP_SYSTEM_MAC_DUMP_ALLOC_M)
+#define DUMP_USAGE_S        HP_SYSTEM_SRAM_USAGE_S
+#define DUMP_USAGE_ALLOC    HP_SYSTEM_MAC_DUMP_ALLOC
+
+/* The I/Q low-pass capacitor codes sit in registers 6 and 7 here. */
+#define BBTOP_BLOCK    0x67U
+#define BBTOP_HOST     1U
+#define BBTOP_LPF_REG  6U
+#define BBTOP_LPF_DCAP GENMASK(5, 0)
+
+#define AGC_FORCE_REG      0x600a702cU
+#define AGC_GAIN_MAX       GENMASK(14, 8)
+/* Upstream's C5 limit. */
+#define AGC_GAIN_MAX_VALID 89U
+
 #else
 #error "esp_sdr: unsupported SoC"
+#endif
+
+#ifndef DUMP_USAGE_ALLOC
+#define DUMP_USAGE_ALLOC 0U
 #endif
 
 #define SENTINEL 0xa5a0055aU
@@ -142,6 +198,24 @@ extern void stop_tx_tone(unsigned int en);
 #define phy_pbus_xpd_tx_off rom_pbus_xpd_tx_off
 #define phy_set_rxclk_en    rom_set_rxclk_en
 #define phy_stop_tx_tone    stop_tx_tone
+#elif defined(CONFIG_SOC_SERIES_ESP32C5)
+/* The C5 PHY's entry points all carry the phy_ prefix. */
+extern void phy_pbus_workmode(void);
+extern void phy_pbus_xpd_rx_on(unsigned int en);
+extern void phy_pbus_xpd_tx_off(void);
+extern void phy_set_rxclk_en(unsigned int en);
+extern void phy_stop_tx_tone(unsigned int en);
+/* libphy: channel setup at any MHz above 14 (5 GHz path from 4500 MHz), mode 1 the wide RX path. */
+extern void phy_set_chanfreq(unsigned int mhz, unsigned int mode);
+extern void phy_set_rf_freq_offset(unsigned int xtal, unsigned int mhz, int khz);
+/* The PHY's calibration parameters; byte 49 is the crystal selector. */
+extern unsigned char phy_param[];
+#define PHY_PARAM_XTAL 49
+extern unsigned int phy_chip_i2c_readReg(unsigned int block, unsigned int host, unsigned int reg);
+extern void phy_i2c_writeReg(unsigned int block, unsigned int host, unsigned int reg,
+			     unsigned int val);
+#define rom_chip_i2c_readReg  phy_chip_i2c_readReg
+#define rom_chip_i2c_writeReg phy_i2c_writeReg
 #else
 extern void pbus_workmode(void);
 extern void ram_pbus_xpd_rx_on(unsigned int en);

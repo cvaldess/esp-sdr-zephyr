@@ -77,13 +77,17 @@ extern "C" {
 
 /**
  * Native dump engine rates; values are the upstream protocol rate indices.
- * The S3 receives at all three (esp_sdr_rx_rate_hz()), the C6 at 80 MS/s only
- * (the others return 0); the DAC runs at 80 and 40 MS/s (esp_sdr_tx_rate_hz(),
- * S3 only).
+ * The S3 receives at 80, 40 and 16 MS/s (esp_sdr_rx_rate_hz()), the C5 at 80,
+ * 40, 20, 10, 8 and 4 MS/s, the C6 at 80 MS/s only (the others return 0); the
+ * DAC runs at 80 and 40 MS/s (esp_sdr_tx_rate_hz(), S3 only).
  */
 enum esp_sdr_rate {
 	ESP_SDR_RATE_80MSPS = 0,
 	ESP_SDR_RATE_40MSPS = 1,
+	ESP_SDR_RATE_20MSPS = 2,
+	ESP_SDR_RATE_10MSPS = 3,
+	ESP_SDR_RATE_8MSPS = 4,
+	ESP_SDR_RATE_4MSPS = 5,
 	ESP_SDR_RATE_16MSPS = 6,
 };
 

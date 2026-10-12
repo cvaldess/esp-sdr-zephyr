@@ -2,7 +2,7 @@
 
 config ESP_SDR
 	bool "ESP-SDR raw I/Q receiver"
-	depends on SOC_SERIES_ESP32S3 || SOC_SERIES_ESP32C6
+	depends on SOC_SERIES_ESP32S3 || SOC_SERIES_ESP32C6 || SOC_SERIES_ESP32C5
 	depends on WIFI_ESP32
 	# The bank and heap limits assume no APPCPU image in SRAM.
 	depends on !SOC_ENABLE_APPCPU
@@ -10,7 +10,9 @@ config ESP_SDR
 	  Burst capture of raw baseband I/Q samples from the Wi-Fi receiver,
 	  ported from ESPARGOS esp-sdr. Reserves an SRAM bank for the capture
 	  engine (64 KiB on the S3, the 128 KiB block 2 on the C6). The ESP32-C6 captures at 80 MS/s only and has no
-	  transmit or ring support yet.
+	  transmit or ring support yet. The ESP32-C5 receives at 80 to 4 MS/s
+	  into its 128 KiB block 1, which splits the image around it; no
+	  transmit or ring support.
 
 if ESP_SDR
 

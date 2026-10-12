@@ -16,7 +16,9 @@
 
 /* Upstream helpers, used unmodified. */
 #include "rx_bandwidth.h"
+#if !defined(CONFIG_SOC_SERIES_ESP32C5)
 #include "rx_lo.h"
+#endif
 
 #include "esp_sdr_priv.h"
 
@@ -89,10 +91,12 @@ static void rx_front_end(bool retune, uint32_t settle_us)
 	phy_pbus_xpd_rx_on(1);
 	phy_set_rxclk_en(1);
 	gain_apply();
+#if !defined(CONFIG_SOC_SERIES_ESP32C5)
 	/* The 5/6 LO divider is selected after RX setup, as upstream. */
 	regi2c_enter_critical();
 	rx_lo_select(esp_sdr_lo_divided());
 	regi2c_exit_critical();
+#endif
 	lpf_apply();
 	k_busy_wait(settle_us);
 }
@@ -184,6 +188,14 @@ int esp_sdr_rx_set_bandwidth(uint32_t mhz)
 	if (mhz != 0U && (mhz < RX_BANDWIDTH_MIN || mhz > RX_BANDWIDTH_MAX)) {
 		return -EINVAL;
 	}
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+	/* As upstream: above 23 MHz (or open) the PHY's wide path, a full channel setup. */
+	int ret = esp_sdr_set_channel_bw(rx_bandwidth_phy_mode(mhz));
+
+	if (ret != 0 && ret != -EAGAIN) {
+		return ret;
+	}
+#endif
 	return esp_sdr_rx_set_lpf(rx_bandwidth_dcap(mhz));
 }
 
@@ -222,6 +234,17 @@ uint32_t esp_sdr_rx_rate_hz(enum esp_sdr_rate rate)
 		return 40000000U;
 	case ESP_SDR_RATE_16MSPS:
 		return 16000000U;
+#elif defined(CONFIG_SOC_SERIES_ESP32C5)
+	case ESP_SDR_RATE_40MSPS:
+		return 40000000U;
+	case ESP_SDR_RATE_20MSPS:
+		return 20000000U;
+	case ESP_SDR_RATE_10MSPS:
+		return 10000000U;
+	case ESP_SDR_RATE_8MSPS:
+		return 8000000U;
+	case ESP_SDR_RATE_4MSPS:
+		return 4000000U;
 #endif
 	default:
 		return 0U;
@@ -252,13 +275,20 @@ static uint32_t dump_arm(uint32_t usage)
 	REG_WRITE(DUMP_CONFIG_REG, DUMP_CONFIG_IQ);
 	REG_WRITE(DUMP_USAGE_REG, (saved & ~DUMP_USAGE_M) | usage);
 #else
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+	REG_WRITE(DUMP_CLK_FORCE_REG, UINT32_MAX);
+	REG_SET_BIT(DUMP_CLK_EN_REG, DUMP_CLK_EN_BIT);
+#else
 	REG_WRITE(DUMP_CLK_FORCE0_REG, UINT32_MAX);
 	REG_WRITE(DUMP_CLK_FORCE2_REG, DUMP_CLK_FORCE2);
 	REG_WRITE(DUMP_CLK_FORCE1_REG, UINT32_MAX);
+#endif
 	REG_WRITE(DUMP_CONFIG_REG, (REG_READ(DUMP_CONFIG_REG) & ~DUMP_CONFIG_LANES) | DUMP_CONFIG_IQ);
 	REG_WRITE(DUMP_MODE_REG, (REG_READ(DUMP_MODE_REG) & ~DUMP_MODE_SOURCE) |
 					 FIELD_PREP(DUMP_MODE_SOURCE, DUMP_SOURCE_IQ));
+#if !defined(CONFIG_SOC_SERIES_ESP32C5)
 	REG_CLR_BIT(DUMP_GATE_REG, DUMP_GATE_BIT);
+#endif
 	REG_WRITE(DUMP_USAGE_REG, (saved & ~DUMP_USAGE_M) | usage);
 	/* The bank switch must land before the engine starts writing. */
 	__asm__ volatile("fence rw, rw" ::: "memory");
@@ -300,7 +330,13 @@ static int capture_locked(enum esp_sdr_rate rate, size_t count, volatile uint32_
 #if defined(CONFIG_SOC_SERIES_ESP32S3)
 	ctrl = DUMP_CTRL_RUN | rate_bits(rate) | FIELD_PREP(DUMP_CTRL_COUNT, count);
 #else
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+	/* The enum values are the engine's rate indices. */
+	REG_WRITE(DUMP_MODE_REG, (REG_READ(DUMP_MODE_REG) & ~DUMP_MODE_RATE) |
+					 FIELD_PREP(DUMP_MODE_RATE, (uint32_t)rate));
+#else
 	ARG_UNUSED(rate);
+#endif
 	ctrl = DUMP_CTRL_RUN | FIELD_PREP(DUMP_CTRL_COUNT, count);
 	/* As upstream: clear a stale done flag before running. */
 	REG_WRITE(DUMP_CTRL_REG, FIELD_PREP(DUMP_CTRL_COUNT, count) | DUMP_CTRL_DONE);

@@ -26,7 +26,8 @@ like [example-application](https://github.com/zephyrproject-rtos/example-applica
 | `tests/regression/` | pytest on two real boards: 802.15.4 frames between the C6 and the S3 software radio, LO tuning |
 | `doc/` | Guides (Markdown) and the documentation build: Doxygen API reference of `include/`, Sphinx site, see [Documentation](#documentation) |
 | `scripts/west_commands/dfu.py` | `west dfu`: DFU update, health check and confirm of a running board; `--storage` writes multiapp's volume, `--esptool` flashes over the USB-Serial-JTAG without the boot button |
-| `zephyr/module.yml` | Module definition and the `librftest.a` blob |
+| `boards/waveshare/esp32c5_zero/` | Board `waveshare_esp32c5_zero/esp32c5/hpcore` (Waveshare ESP32-C5-Zero): USB-Serial-JTAG console, 4 MB flash, no PSRAM, `CONFIG_WAVESHARE_ESP32C5_ZERO_EXT_ANTENNA` for the U.FL |
+| `zephyr/module.yml` | Module definition (board root) and the `librftest.a` blobs |
 | `west.yml` | The workspace: Zephyr, hal_espressif, libvrt, upstream esp-sdr, esp-dsp |
 
 ## Getting started
@@ -68,7 +69,11 @@ release notes show the steps from flashing to gqrx.
   no ring and no 40 or 16 MS/s receive rates; the CIC decimated and folded
   captures work at 80 MS/s. Of the apps, `capture`, `rfprobe` and `wpan`
   (native radio) run on it; the others need the S3's USB OTG port, PSRAM or
-  transmit.
+  transmit. The ESP32-C5 (Waveshare ESP32-C5-Zero, board
+  `waveshare_esp32c5_zero/esp32c5/hpcore` in `boards/`) has receive
+  capture only: bursts at 80, 40, 20, 10, 8 or 4 MS/s into SRAM block 1
+  (samples at 0x40830000), 2.4 and 5 GHz; `capture` and `rfprobe` run on it
+  ("ESP32-C5" in [doc/hardware-quirks.md](doc/hardware-quirks.md)).
 - Tuning: the API takes 100 to 6000 MHz, but the PLL only locks over a range
   that differs from chip to chip. Below 2210 MHz the LO goes through the 5/6
   divider (PLL at 1.2 times the frequency), for receive and transmit. After

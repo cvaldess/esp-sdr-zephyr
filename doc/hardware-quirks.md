@@ -215,6 +215,65 @@ capture bank's end up to `DRAM_USER_END` (0x3fce9704).
   a PSRAM stack, which is why the prelude turns its `app_usb_init()` into a
   call that does nothing.
 
+## ESP32-C5 (receive only)
+
+Measured on one Waveshare ESP32-C5-Zero (ESP32-C5HF4 rev v1.0, 48 MHz
+crystal, 4 MB flash, no PSRAM), board `waveshare_esp32c5_zero/esp32c5/hpcore`
+(`boards/waveshare/esp32c5_zero/`: console on USB-Serial-JTAG, 4 MB flash
+with Espressif's partitions at the C5's 0x2000 boot offset, PSRAM disabled,
+simple boot). Nothing was transmitted.
+
+- **The capture engine is the C6's with a rate field.** Raw source 15 in
+  `0x600a9008` bits 20:17, rate index in bits 23:21, a 17-bit count, lanes in
+  `0x600a9018` (as librftest's `adctrig()`). The six indices 0 to 5 give
+  80, 40, 20, 10, 8 and 4 MS/s: 16380 samples took 208, 412, 822, 1640, 2050
+  and 4098 us, and the count field (`0x600a9008` bits 15:0) advances by 10
+  samples per 2.5 us at index 5. `ESP_SDR_RATE_20MSPS` to `_4MSPS` are C5
+  only.
+- **The dump gate register stalls the bus.** Any access to `0x600a20b4` (the
+  C6's dump source gate, in the Bluetooth baseband) takes 1.64 ms and reads
+  0. Captures work without it, so the C5 build skips it; with it, every
+  capture took 1.7 ms longer.
+- **The owner bit takes a whole 128 KiB block.** `SRAM_USAGE` (`0x60095004`
+  bits 11:8) = 2 with `MAC_DUMP_ALLOC` (bit 16) puts the samples at
+  0x40830000, 64 KiB into block 1, but the CPU loses all of block 1
+  (0x40820000 to 0x4083ffff): reads return the last word it read there,
+  writes are dropped, nothing faults. Blocks 0 and 2 stay with the CPU.
+  Block 2 holds the ROM's data, so block 1 is the only capture bank.
+- **The image is split around the bank.** `esp_sdr_bank_c5.ld` is a
+  `RAM_SECTIONS` snippet: code and initialized data link below 0x40820000,
+  the bank takes block 1, and every section linked after the snippet
+  (logging and kernel object data, the rest of `.noinit`, `.bss`, the libc
+  heap) moves to block 2. The network stack's and the Wi-Fi driver's
+  `.noinit` go below the bank to balance the halves. Margins with the Wi-Fi
+  driver's defaults: `apps/capture` leaves 8.3 KiB in block 0 and 21 KiB of
+  libc heap in block 2; `apps/rfprobe` 4.9 KiB and 20 KiB. "code and data
+  overlap the capture bank" means block 0 is full; "will not fit in region
+  `sram0_0_seg`" means block 2 is.
+- **Tuning.** `phy_set_chanfreq()` takes any MHz above 14 and runs a full
+  channel setup, including 5 GHz. Wi-Fi bursts received with the LO off the
+  channel grid (2433, 2444, 5190, 5200 MHz) centre on 2437, 5180 and 5220 MHz
+  within one 0.31 MHz bin. The PHY takes its 5 GHz path from 4500 MHz up.
+  Below about 1100 MHz the PLL's SDM word goes negative, so those requests
+  tune nothing. No PLL lock or VCO window flag is known on the C5, so
+  `esp_sdr_set_freq()` never returns -ERANGE there.
+- **Receive DC grows with gain, and the AGC idles high.** The largest
+  calibrated gain index is 77 at 2412 MHz and 83 at 5500 MHz. With a forced
+  index up to 60 the DC stays within about 10 of 512. At 65 to 77 it reaches
+  20 to 50, and at 5500 MHz with index 77 it reaches 78. Under the AGC
+  (`ESP_SDR_RX_GAIN_AUTO`) it measured +8 to +230 on I at 2412 MHz, varying from boot
+  to boot. Force a gain for measurements.
+- **The antenna switch.** GPIO26 drives the board's RF switch (200 kOhm
+  pull-down, so the chip antenna while the pin floats).
+  `CONFIG_WAVESHARE_ESP32C5_ZERO_EXT_ANTENNA` drives it high at boot
+  (`board.c`), which selects the U.FL, as `CONFIG_XIAO_ESP32C6_EXT_ANTENNA`
+  does on the XIAO C6; `capture` and `rfprobe` set it for the coax bench. At
+  gain 60 over 2412 to 2472 MHz, low gave ambient Wi-Fi up to -1 dBFS
+  (clipping), high at most -16 dBFS with the U.FL on coax and -30 dBFS with
+  it open. The library does not drive the pin.
+- **No ring and no transmit.** The C5 build has neither; `ESP_SDR_RFTEST`
+  links the C5 librftest only for `force_rx_gain()`.
+
 ## CPU and toolchain
 
 - **No hardware float divide.** A float `/` calls `__divsf3`. In hot loops,
