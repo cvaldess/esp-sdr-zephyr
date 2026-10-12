@@ -1,7 +1,7 @@
 .. _esp_sdr_link:
 
-ESP-SDR link
-############
+link
+####
 
 Overview
 ********

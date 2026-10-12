@@ -1504,7 +1504,7 @@ reg 12 the raw `0x62:12`.
   seen in the erratic band, shows that all 9 bits exist. Repeated calibrations
   at one frequency land a few codes apart.
 - The window sits about 12 MHz inside the lock limits, so -ERANGE errs on the
-  safe side (`include/esp_sdr/esp_sdr.h:31-38, 110-125`, `README.md:56-63`).
+  safe side (`include/esp_sdr/esp_sdr.h:31-38, 110-125`, `README.rst`, "The library").
 - The limits are the same with and without the divider, so they are VCO limits,
   per chip and untested over temperature. Below 2210 MHz the library always
   uses the divider, which reaches the VCO's lower limit / 1.2

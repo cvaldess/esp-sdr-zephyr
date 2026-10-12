@@ -1,7 +1,7 @@
 .. _esp_sdr_osmosdr_serial:
 
-ESP-SDR osmosdr over a serial link
-##################################
+osmosdr over a serial link
+##########################
 
 Overview
 ********

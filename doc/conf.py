@@ -38,31 +38,28 @@ VERSION = dict(re.findall(r"^(\w+) = (\d+)$", (REPO / "VERSION").read_text(), re
 version = release = "{VERSION_MAJOR}.{VERSION_MINOR}.{PATCHLEVEL}".format(**VERSION)
 html_title = f"{project} {release}"
 
-# overview.md shows the README. Its links are relative to the repository root:
+# overview.rst shows the README. Its links are relative to the repository root:
 # guides and app READMEs become links to their pages here, other files go to
 # GitHub.
 GITHUB = "https://github.com/cyber-murmel/esp-sdr-zephyr/blob/main/"
-LINK = re.compile(r"\]\(([^)\s]+)\)")
+LINK = re.compile(r"`([^`<]+?)\s*<([^>\s]+)>`__")
 
 
 def readme_link(m):
-    target = m.group(1)
-    if re.match(r"[a-z]+:", target) or target.startswith("#"):
+    text, target = m.group(1), m.group(2)
+    if re.match(r"[a-z]+:", target):
         return m.group(0)
-    path, _, anchor = target.partition("#")
-    app = re.fullmatch(r"apps/(\w+)/README\.rst", path)
-    if path.startswith("doc/") and (REPO / path).is_file() and path.endswith(".md"):
-        path = path[len("doc/"):]
-    elif app and (DOC / "apps" / f"{app.group(1)}.rst").is_file():
-        path = f"apps/{app.group(1)}.rst"
-    else:
-        path = GITHUB + path
-    return f"]({path}{'#' + anchor if anchor else ''})"
+    app = re.fullmatch(r"apps/(\w+)/README\.rst", target)
+    if target.startswith("doc/") and target.endswith(".md") and (REPO / target).is_file():
+        return f":doc:`{text} <{target[len('doc/'):-len('.md')]}>`"
+    if app and (DOC / "apps" / f"{app.group(1)}.rst").is_file():
+        return f":doc:`{text} <apps/{app.group(1)}>`"
+    return f"`{text} <{GITHUB}{target}>`__"
 
 
 def readme_source(app, docname, source):
     if docname == "overview":
-        source[0] = LINK.sub(readme_link, (REPO / "README.md").read_text())
+        source[0] = LINK.sub(readme_link, (REPO / "README.rst").read_text())
 
 
 def copy_doxygen(app, exception):

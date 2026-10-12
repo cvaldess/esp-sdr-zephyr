@@ -1,7 +1,9 @@
 .. _esp_sdr_wpan:
 
-wpan: IEEE 802.15.4 test shell
-##############################
+wpan
+####
+
+IEEE 802.15.4 test shell
 
 Overview
 ********

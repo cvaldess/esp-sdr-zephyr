@@ -1,7 +1,7 @@
 .. _esp_sdr_capture:
 
-ESP-SDR capture
-###############
+capture
+#######
 
 Overview
 ********

@@ -1,7 +1,9 @@
 .. _esp_sdr_rfprobe:
 
-rfprobe: radio bench probe
-##########################
+rfprobe
+#######
+
+radio bench probe
 
 Overview
 ********

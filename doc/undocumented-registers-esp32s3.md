@@ -1429,7 +1429,7 @@ reg 12 the raw `0x62:12`.
 - Below the window the calibration pins the code at 383, above it at 0.
   Repeated calibrations at one frequency land a few codes apart.
 - The window sits about 12 MHz inside the lock limits, so -ERANGE errs on the
-  safe side (`include/esp_sdr/esp_sdr.h:31-38, 110-125`, `README.md:56-63`).
+  safe side (`include/esp_sdr/esp_sdr.h:31-38, 110-125`, `README.rst`, "The library").
 - The limits are the same with and without the divider, so they are VCO limits,
   per chip and untested over temperature. Nothing locks directly below 2180 or
   above 2793 MHz (searched 200 to 6000 MHz). Below 2210 MHz the library always
